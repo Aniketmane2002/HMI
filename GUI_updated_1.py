@@ -12,7 +12,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QColor, QPainter, QFont, QPalette, QPixmap, QPen,
     QLinearGradient, QTextCursor, QFontMetrics, QTextCharFormat,
-    QBrush
+    QBrush, QRadialGradient
 )
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QVBoxLayout,
@@ -28,20 +28,17 @@ import can
 #         Constants
 # ===========================
 
-BITRATE         = 250000
+BITRATE            = 250000
 CAN_CHANNEL_LINUX  = "can0"
 CAN_IFACE_LINUX    = "socketcan"
 CAN_IFACE_WINDOWS  = "vector"
 
-TORQUE_MIN = -500
-TORQUE_MAX = +500
+TORQUE_MIN    = -500
+TORQUE_MAX    = +500
 TORQUE_ENDIAN = "little"
 
-# Log ring-buffer hard cap (lines stored in memory)
 LOG_RING_MAX    = 20_000
-# Max blocks shown in the QPlainTextEdit widget
 LOG_WIDGET_MAX  = 3_000
-# How often (ms) the log widget is refreshed from the pending queue
 LOG_FLUSH_MS    = 80
 
 # ===========================
@@ -87,9 +84,9 @@ class VerticalBar(QWidget):
         super().__init__(parent)
         self._min_value = TORQUE_MIN
         self._max_value = TORQUE_MAX
-        self._value = 0
-        self._color = QColor(color)
-        self._label = label_text
+        self._value     = 0
+        self._color     = QColor(color)
+        self._label     = label_text
         self.setMinimumSize(100, 260)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setToolTip(f"{self._label}: 0")
@@ -124,13 +121,14 @@ class VerticalBar(QWidget):
         p.setRenderHint(QPainter.Antialiasing, True)
         outer = self.rect().adjusted(25, 16, -25, -56)
 
-        p.fillRect(outer, QColor("#F4F4F4"))
-        p.setPen(QPen(QColor("#708487"), 1))
+        # Dark car-display style background
+        p.fillRect(outer, QColor("#1A1F2E"))
+        p.setPen(QPen(QColor("#2A3A5C"), 1))
         p.drawRoundedRect(outer, 6, 6)
 
         inner = outer.adjusted(4, 4, -4, -4)
         zero_y = inner.center().y()
-        p.setPen(QPen(QColor("#666"), 1))
+        p.setPen(QPen(QColor("#3A4A6A"), 1))
         p.drawLine(inner.left(), zero_y, inner.right(), zero_y)
 
         half_h = inner.height() / 2.0
@@ -139,28 +137,41 @@ class VerticalBar(QWidget):
         vmax = float(self._max_value)
 
         p.setPen(Qt.NoPen)
-        p.setBrush(self._color)
 
         if v > 0.0 and vmax > 0.0:
             frac = min(1.0, v / vmax)
             h = int(half_h * frac)
             if h > 0:
                 top = int(zero_y - h)
-                p.drawRoundedRect(QRect(inner.left(), top, inner.width(), h), 4, 4)
+                bar_rect = QRect(inner.left(), top, inner.width(), h)
+                grad = QLinearGradient(bar_rect.topLeft(), bar_rect.bottomLeft())
+                grad.setColorAt(0.0, QColor("#00E5FF"))
+                grad.setColorAt(1.0, QColor("#0077B6"))
+                p.setBrush(grad)
+                p.drawRoundedRect(bar_rect, 4, 4)
         elif v < 0.0 and vmin < 0.0:
             frac = min(1.0, abs(v) / abs(vmin))
             h = int(half_h * frac)
             if h > 0:
-                p.drawRoundedRect(QRect(inner.left(), int(zero_y), inner.width(), h), 4, 4)
+                bar_rect = QRect(inner.left(), int(zero_y), inner.width(), h)
+                grad = QLinearGradient(bar_rect.topLeft(), bar_rect.bottomLeft())
+                grad.setColorAt(0.0, QColor("#FF6B35"))
+                grad.setColorAt(1.0, QColor("#CC3300"))
+                p.setBrush(grad)
+                p.drawRoundedRect(bar_rect, 4, 4)
 
-        p.setPen(QColor("#666"))
+        p.setPen(QColor("#4A5A7A"))
         p.drawLine(outer.left() - 10, int(zero_y), outer.left(), int(zero_y))
 
-        p.setPen(QColor("#333"))
-        p.setFont(QFont("Segoe UI", 9, QFont.Medium))
+        p.setPen(QColor("#00E5FF"))
+        p.setFont(QFont("Segoe UI", 8, QFont.Medium))
+        p.drawText(self.rect().adjusted(0, 0, 0, -30),
+                   Qt.AlignHCenter | Qt.AlignBottom,
+                   self._label)
+        p.setFont(QFont("Segoe UI", 9, QFont.Bold))
         p.drawText(self.rect().adjusted(0, 0, 0, -6),
                    Qt.AlignHCenter | Qt.AlignBottom,
-                   f"{self._label}\n{self._value} Nm")
+                   f"{self._value} Nm")
 
 
 class ToggleSwitch(QPushButton):
@@ -177,7 +188,7 @@ class ToggleSwitch(QPushButton):
         p.setRenderHint(QPainter.Antialiasing, True)
         rect = self.rect().adjusted(2, 2, -2, -2)
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor("#B0B0B0") if self.isChecked() else QColor("#3A86FF"))
+        p.setBrush(QColor("#00BCD4") if self.isChecked() else QColor("#5A6A7A"))
         p.drawRoundedRect(rect, rect.height() / 2, rect.height() / 2)
         margin = 3
         d  = rect.height() - 2 * margin
@@ -199,15 +210,15 @@ class BigSlider(QSlider):
             QSlider::groove:horizontal {
                 height: 26px; margin: 18px 22px; border-radius: 13px;
                 background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
-                            stop:0 #EDEDED, stop:1 #D3D3D3);
-                border: 1px solid #B5B5B5;
+                            stop:0 #1A2540, stop:1 #0D1520);
+                border: 1px solid #2A3A5C;
             }
             QSlider::handle:horizontal {
-                background: #1565C0; border: 1px solid #0D47A1;
+                background: #00BCD4; border: 2px solid #00E5FF;
                 width: 46px; height: 46px; margin: -12px -8px; border-radius: 8px;
             }
-            QSlider::handle:horizontal:hover   { background: #1B74E4; }
-            QSlider::handle:horizontal:pressed { background: #0F5AB8; }
+            QSlider::handle:horizontal:hover   { background: #00D4EE; }
+            QSlider::handle:horizontal:pressed { background: #0099AA; }
         """)
 
 
@@ -215,13 +226,21 @@ class BigSlider(QSlider):
 #     Efficient Log Widget
 # ===========================
 
+# Fixed-width column specification (characters):
+#   Timestamp : 16  (e.g. [00:13:29.281])
+#   Dir       :  4  (RX / TX / --)
+#   ID        :  6  (hex, e.g. 0020)
+#   DLC       :  3
+#   B0..B7    :  3 each  → total bytes area = 8*3-1 = 23
+# We use a monospace font so every char is the same width.
+
+_LOG_HEADER = "[HH:MM:SS.mmm]   Dir   ID      DLC   B0    B1    B2    B3    B4    B5    B6    B7"
+
 class CanLogView(QPlainTextEdit):
     """
-    A QPlainTextEdit tuned for high-rate CAN log display.
-    - Fixed-width font for column alignment
-    - Hard block cap to prevent memory growth
-    - appendBatch() accepts a list[str] and appends them in one document operation
-    - Auto-scroll pinned to bottom unless user scrolls up
+    Dark terminal-style CAN log.  Column widths match _LOG_HEADER exactly.
+    appendBatch() is used for high-rate insertion.
+    Auto-scroll unless user scrolls up.
     """
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -236,25 +255,25 @@ class CanLogView(QPlainTextEdit):
 
         self.setStyleSheet("""
             QPlainTextEdit {
-                background: #0D1117;
+                background: #0A0E1A;
                 color: #C9D1D9;
-                border: 1px solid #30363D;
-                border-radius: 6px;
-                padding: 4px 6px;
+                border: none;
+                border-radius: 0px;
+                padding: 2px 4px;
                 selection-background-color: #264F78;
             }
             QScrollBar:vertical {
-                background: #161B22; width: 10px; border-radius: 5px;
+                background: #0D1117; width: 8px; border-radius: 4px;
             }
             QScrollBar::handle:vertical {
-                background: #30363D; border-radius: 5px; min-height: 20px;
+                background: #2A3A5C; border-radius: 4px; min-height: 20px;
             }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
             QScrollBar:horizontal {
-                background: #161B22; height: 10px; border-radius: 5px;
+                background: #0D1117; height: 8px; border-radius: 4px;
             }
             QScrollBar::handle:horizontal {
-                background: #30363D; border-radius: 5px; min-width: 20px;
+                background: #2A3A5C; border-radius: 4px; min-width: 20px;
             }
             QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }
         """)
@@ -268,11 +287,9 @@ class CanLogView(QPlainTextEdit):
         self._auto_scroll = (val >= vbar.maximum() - 4)
 
     def appendBatch(self, lines: list):
-        """Append multiple lines in a single document operation — much faster than appendPlainText loop."""
         if not lines:
             return
         text = "\n".join(lines)
-        # Move cursor to end and insert block
         cursor = self.textCursor()
         cursor.movePosition(QTextCursor.End)
         if self.document().blockCount() > 1:
@@ -284,26 +301,58 @@ class CanLogView(QPlainTextEdit):
             vbar.setValue(vbar.maximum())
 
 
+# Header widget that visually sits on top of CanLogView with zero gap
+class LogPanel(QFrame):
+    """
+    Wraps the column-header label + CanLogView in one seamless dark container.
+    No gap between header row and data — both have the same background.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("LogPanel")
+        self.setStyleSheet("""
+            QFrame#LogPanel {
+                background: #0A0E1A;
+                border: 1px solid #1E2A40;
+                border-radius: 6px;
+            }
+        """)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+
+        # ── Header row ────────────────────────────────────────────────────
+        self.header = QLabel(_LOG_HEADER)
+        mono = QFont("Consolas", 9, QFont.Bold)
+        mono.setStyleHint(QFont.Monospace)
+        self.header.setFont(mono)
+        self.header.setStyleSheet(
+            "background:#0D1520; color:#4A90D9;"
+            "padding: 3px 6px; border-bottom: 1px solid #1E2A40;"
+        )
+        lay.addWidget(self.header)
+
+        # ── Log view ──────────────────────────────────────────────────────
+        self.log_view = CanLogView()
+        lay.addWidget(self.log_view)
+
+
 # ===========================
 #       Threading
 # ===========================
 
 class CanReaderThread(QThread):
-    """
-    Reads CAN messages; emits batches every ~16 ms so the GUI thread
-    is never flooded at 100 msg/s (10 ms period).
-    """
     messages_batch = Signal(list)
     interface_down = Signal(str)
 
     def __init__(self, bus: can.BusABC):
         super().__init__()
-        self._bus = bus
+        self._bus     = bus
         self._running = True
 
     def run(self):
-        batch: list = []
-        last_emit = time.monotonic()
+        batch:     list  = []
+        last_emit: float = time.monotonic()
 
         while self._running:
             try:
@@ -410,12 +459,6 @@ class HeaderBar(QWidget):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setObjectName("HeaderBar")
 
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setOffset(0, 10)
-        shadow.setBlurRadius(36)
-        shadow.setColor(QColor(0, 0, 0, 20))
-        self.setGraphicsEffect(shadow)
-
         root = QHBoxLayout(self)
         root.setContentsMargins(26, 4, 26, 10)
         root.setSpacing(0)
@@ -447,11 +490,6 @@ class HeaderBar(QWidget):
         root.addWidget(titleWrap, 2)
         root.addWidget(self.rightLogo, 1)
 
-        self._sheen_x = -200.0
-        self._sheen_timer = QTimer(self)
-        self._sheen_timer.timeout.connect(self._tick_sheen)
-        self._sheen_timer.start(30)
-
     def setTitle(self, text: str):
         self._title = text
         self.titleLbl.setText(text)
@@ -474,41 +512,152 @@ class HeaderBar(QWidget):
             label.setMinimumSize(size_hint)
             label.setProperty("missingLogo", True)
 
-    def _tick_sheen(self):
-        w = max(1, self.width())
-        self._sheen_x += w * 0.01
-        if self._sheen_x > w + 200:
-            self._sheen_x = -200
-        self.update()
-
     def paintEvent(self, ev):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
         r = self.rect().adjusted(1, 1, -1, -1)
         radius = 12
 
+        # Dark automotive header
         grad = QLinearGradient(r.topLeft(), r.bottomRight())
-        grad.setColorAt(0.0, QColor("#F0F5FF"))
-        grad.setColorAt(1.0, QColor("#EAF3FF"))
+        grad.setColorAt(0.0, QColor("#0D1520"))
+        grad.setColorAt(1.0, QColor("#111827"))
         p.setBrush(grad)
-        p.setPen(QColor(0, 0, 0, 22))
+        p.setPen(QPen(QColor("#00BCD4"), 1))
         p.drawRoundedRect(r, radius, radius)
 
-        glass = QColor(255, 255, 255, 110)
-        p.setBrush(glass)
-        p.setPen(Qt.NoPen)
-        p.drawRoundedRect(r.adjusted(1, 1, -1, -1), radius - 2, radius - 2)
 
-        p.setOpacity(0.5)
-        sheen_w = 140
-        x = self._sheen_x
-        path_rect = QRectF(x, r.top(), sheen_w, r.height())
-        g2 = QLinearGradient(path_rect.topLeft(), path_rect.topRight())
-        g2.setColorAt(0.0, QColor(255, 255, 255, 0))
-        g2.setColorAt(0.5, QColor(255, 255, 255, 90))
-        g2.setColorAt(1.0, QColor(255, 255, 255, 0))
-        p.fillRect(path_rect, g2)
-        p.setOpacity(1.0)
+# ===========================
+#     Car Display Widget
+# ===========================
+
+class CarDisplayWidget(QWidget):
+    """
+    Draws a top-view car schematic with 4 wheel indicators — pure QPainter,
+    no image file needed.  Torque values are shown as coloured arcs on each wheel.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(340, 440)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._fl = self._fr = self._rl = self._rr = 0
+
+    def set_values(self, fl: int, fr: int, rl: int, rr: int):
+        self._fl, self._fr, self._rl, self._rr = fl, fr, rl, rr
+        self.update()
+
+    def _wheel_color(self, v: int):
+        if v > 0:
+            t = min(1.0, v / TORQUE_MAX)
+            r = int(0   + t * 0)
+            g = int(180 + t * 75)
+            b = int(255)
+            return QColor(r, g, b)
+        elif v < 0:
+            t = min(1.0, abs(v) / abs(TORQUE_MIN))
+            return QColor(int(255), int(80 * (1 - t)), 0)
+        return QColor("#3A4A6A")
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+
+        w, h = self.width(), self.height()
+        cx, cy = w / 2, h / 2
+
+        # Car body
+        body_w, body_h = min(w * 0.32, 110), min(h * 0.55, 260)
+        body_x = cx - body_w / 2
+        body_y = cy - body_h / 2
+
+        # Outer glow
+        glow_grad = QRadialGradient(cx, cy, max(body_w, body_h) * 0.9)
+        glow_grad.setColorAt(0.0, QColor(0, 188, 212, 18))
+        glow_grad.setColorAt(1.0, QColor(0, 0, 0, 0))
+        p.setBrush(glow_grad)
+        p.setPen(Qt.NoPen)
+        p.drawEllipse(int(cx - body_w * 1.8), int(cy - body_h * 0.7),
+                      int(body_w * 3.6),       int(body_h * 1.4))
+
+        # Body shadow
+        p.setBrush(QColor(0, 0, 0, 60))
+        p.setPen(Qt.NoPen)
+        p.drawRoundedRect(int(body_x + 8), int(body_y + 12),
+                          int(body_w), int(body_h), 22, 22)
+
+        # Body fill
+        body_grad = QLinearGradient(body_x, body_y, body_x + body_w, body_y + body_h)
+        body_grad.setColorAt(0.0, QColor("#1E2D45"))
+        body_grad.setColorAt(0.5, QColor("#253555"))
+        body_grad.setColorAt(1.0, QColor("#1A2438"))
+        p.setBrush(body_grad)
+        p.setPen(QPen(QColor("#00BCD4"), 1.5))
+        p.drawRoundedRect(QRectF(body_x, body_y, body_w, body_h), 22, 22)
+
+        # Windshield
+        ws_margin = body_w * 0.15
+        ws_h      = body_h * 0.16
+        p.setBrush(QColor(0, 188, 212, 40))
+        p.setPen(QPen(QColor("#00BCD4"), 1))
+        p.drawRoundedRect(QRectF(body_x + ws_margin, body_y + body_h * 0.1,
+                                 body_w - 2 * ws_margin, ws_h), 8, 8)
+        # Rear window
+        p.drawRoundedRect(QRectF(body_x + ws_margin,
+                                 body_y + body_h - body_h * 0.1 - ws_h * 0.85,
+                                 body_w - 2 * ws_margin, ws_h * 0.85), 6, 6)
+
+        # Centre line
+        p.setPen(QPen(QColor("#00BCD4"), 1, Qt.DashLine))
+        p.drawLine(int(cx), int(body_y + 10), int(cx), int(body_y + body_h - 10))
+        p.setPen(Qt.NoPen)
+
+        # ── Wheels ────────────────────────────────────────────────────────
+        ww = body_w * 0.32    # wheel width
+        wh = body_h * 0.18   # wheel height
+        horiz_off = body_w * 0.62
+        front_y   = body_y + body_h * 0.22
+        rear_y    = body_y + body_h * 0.65
+
+        wheels = [
+            (cx - horiz_off - ww / 2, front_y - wh / 2, self._fl),  # FL
+            (cx + horiz_off - ww / 2, front_y - wh / 2, self._fr),  # FR
+            (cx - horiz_off - ww / 2, rear_y  - wh / 2, self._rl),  # RL
+            (cx + horiz_off - ww / 2, rear_y  - wh / 2, self._rr),  # RR
+        ]
+
+        for wx, wy, val in wheels:
+            wr = QRectF(wx, wy, ww, wh)
+            # Tyre shadow
+            p.setBrush(QColor(0, 0, 0, 80))
+            p.setPen(Qt.NoPen)
+            p.drawRoundedRect(wr.adjusted(3, 3, 3, 3), 5, 5)
+            # Tyre body
+            p.setBrush(QColor("#0F1620"))
+            p.setPen(QPen(self._wheel_color(val), 2.5))
+            p.drawRoundedRect(wr, 5, 5)
+            # Rim
+            rim = wr.adjusted(4, 4, -4, -4)
+            p.setBrush(QColor("#1C2A40"))
+            p.setPen(Qt.NoPen)
+            p.drawRoundedRect(rim, 3, 3)
+            # Value text
+            p.setPen(self._wheel_color(val))
+            f = QFont("Segoe UI", 7, QFont.Bold)
+            p.setFont(f)
+            p.drawText(wr, Qt.AlignCenter, f"{val:+d}")
+
+        # Labels
+        p.setPen(QColor("#4A7A9B"))
+        lf = QFont("Segoe UI", 7)
+        p.setFont(lf)
+        label_data = [
+            (wheels[0][0], wheels[0][1], "FL"),
+            (wheels[1][0], wheels[1][1], "FR"),
+            (wheels[2][0], wheels[2][1], "RL"),
+            (wheels[3][0], wheels[3][1], "RR"),
+        ]
+        for lx, ly, lbl in label_data:
+            p.drawText(QRectF(lx, ly - 14, ww, 14), Qt.AlignCenter, lbl)
 
 
 # ===========================
@@ -526,28 +675,23 @@ class MainWindow(QMainWindow):
         self.periodic_thread: Optional[PeriodicTxThread] = None
         self.open_thread:     Optional[CanOpenThread]    = None
 
-        self.filter_ids:      Set[int]   = set()
-        self.logging_enabled: bool       = False
+        self.filter_ids:      Set[int] = set()
+        self.logging_enabled: bool     = False
 
-        # Per-wheel latest values
         self.v_fl = self.v_fr = self.v_rl = self.v_rr = 0
 
-        # Page-visibility flags (skip bar repaints when not visible)
-        self._on_main_tab   = True
-        self._on_demo_page  = True
-        self._bars_visible  = True
+        self._on_main_tab  = True
+        self._on_demo_page = True
+        self._bars_visible = True
 
-        # ── Ring buffer (thread-safe via mutex) ──────────────────────────────
-        # All CAN logging writes here; GUI reads every LOG_FLUSH_MS ms
         self._log_mutex       = QMutex()
-        self._log_ring:  deque = deque(maxlen=LOG_RING_MAX)   # persisted for Save
-        self._log_pending: deque = deque(maxlen=10_000)        # waiting to be shown
+        self._log_ring:   deque = deque(maxlen=LOG_RING_MAX)
+        self._log_pending: deque = deque(maxlen=10_000)
 
         self._build_ui()
         self._setup_theme()
         self._set_status_off()
 
-        # Flush timer: push pending lines into the visible widget
         self._log_flush_timer = QTimer(self)
         self._log_flush_timer.setInterval(LOG_FLUSH_MS)
         self._log_flush_timer.timeout.connect(self._flush_log_to_view)
@@ -567,6 +711,7 @@ class MainWindow(QMainWindow):
         self.bar_fr.set_value(fr)
         self.bar_rl.set_value(rl)
         self.bar_rr.set_value(rr)
+        self.car_display.set_values(fl, fr, rl, rr)
 
     # ──────────────────────────────────────────────────────────────────────
     # CAN TX helper
@@ -674,8 +819,8 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.page_demo   = self._build_demo_page()
         self.page_manual = self._build_manual_page()
-        self.stack.addWidget(self.page_demo)    # 0 = Demo
-        self.stack.addWidget(self.page_manual)  # 1 = Manual
+        self.stack.addWidget(self.page_demo)
+        self.stack.addWidget(self.page_manual)
         main_l.addWidget(self.stack, 1)
 
         toggle_row = QWidget()
@@ -686,6 +831,8 @@ class MainWindow(QMainWindow):
         lbl_demo   = QLabel("DEMO MODES")
         lbl_manual.setFont(QFont("Segoe UI", 10, QFont.Bold))
         lbl_demo.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        lbl_manual.setStyleSheet("color:#8A9BB0;")
+        lbl_demo.setStyleSheet("color:#8A9BB0;")
         self.toggle = ToggleSwitch()
         self.toggle.setChecked(True)
         self.toggle.clicked.connect(self._on_toggle_changed)
@@ -723,18 +870,6 @@ class MainWindow(QMainWindow):
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
     def _build_measurement_tab(self):
-        """
-        Measurement tab layout:
-          ┌──────────────────────────────────────────────┐
-          │  [toolbar buttons]                           │
-          ├──────────────────────────────────────────────┤
-          │                                              │
-          │   CAN Log  (large, ~60 % height)             │
-          │                                              │
-          ├──────────────────────────────────────────────┤
-          │  Torque Signals (0x20)  │  Diagnostics (0x12)│
-          └──────────────────────────────────────────────┘
-        """
         self.tab_logs = QWidget()
         log_l = QVBoxLayout(self.tab_logs)
         log_l.setContentsMargins(10, 10, 10, 10)
@@ -754,8 +889,10 @@ class MainWindow(QMainWindow):
         self.btn_filter         = QPushButton("⧖  Set Filter")
         self.btn_clear          = QPushButton("🗑  Clear")
 
-        self.btn_start_log.setProperty("variant", "success")
-        self.btn_stop_log.setProperty("variant",  "danger")
+        # Different colours from Turn ON/OFF (which use green/red)
+        # Start Logging = teal/cyan, Stop Logging = amber/orange
+        self.btn_start_log.setProperty("variant", "log_start")
+        self.btn_stop_log.setProperty("variant",  "log_stop")
 
         for b in (self.btn_start_log, self.btn_stop_log,
                   self.btn_start_periodic, self.btn_stop_periodic,
@@ -765,30 +902,13 @@ class MainWindow(QMainWindow):
             br.addWidget(b)
         br.addStretch(1)
 
-        # stats label
-        self.lbl_msg_count = QLabel("0 msgs")
-        self.lbl_msg_count.setFont(QFont("Consolas", 9))
-        self.lbl_msg_count.setStyleSheet("color: #888; padding: 0 8px;")
-        br.addWidget(self.lbl_msg_count)
-
         log_l.addWidget(btn_row)
 
-        # ── Log header label ─────────────────────────────────────────────
-        hdr = QLabel(
-            " [HH:MM:SS.mmm]   Dir   ID      DLC   "
-            "B0    B1    B2    B3    B4    B5    B6    B7"
-        )
-        hdr.setFont(QFont("Consolas", 9, QFont.Bold))
-        hdr.setStyleSheet(
-            "background:#161B22; color:#8B949E; border:1px solid #30363D;"
-            "border-radius:4px; padding:3px 6px;"
-        )
-        log_l.addWidget(hdr)
-
-        # ── Log view (big) ────────────────────────────────────────────────
-        self.log_view = CanLogView()
-        self.log_view.setMinimumHeight(260)
-        log_l.addWidget(self.log_view, 5)          # stretch = 5  → takes most space
+        # ── Seamless LogPanel (header + view, no gap) ─────────────────────
+        self.log_panel = LogPanel()
+        self.log_panel.setMinimumHeight(260)
+        self.log_view = self.log_panel.log_view   # keep reference for compat
+        log_l.addWidget(self.log_panel, 5)
 
         # ── Signals row ───────────────────────────────────────────────────
         signals_splitter = QSplitter(Qt.Horizontal)
@@ -835,7 +955,7 @@ class MainWindow(QMainWindow):
         signals_splitter.setStretchFactor(0, 1)
         signals_splitter.setStretchFactor(1, 1)
 
-        log_l.addWidget(signals_splitter, 2)       # stretch = 2
+        log_l.addWidget(signals_splitter, 2)
 
         # Wire buttons
         self.btn_start_log.clicked.connect(self._start_logging)
@@ -848,9 +968,6 @@ class MainWindow(QMainWindow):
 
         self.tabs.addTab(self.tab_logs, "Measurement")
 
-        # running message counter
-        self._total_msg_count = 0
-
     def _build_header(self) -> QWidget:
         return HeaderBar(
             title="TORQUE VECTORING",
@@ -859,80 +976,92 @@ class MainWindow(QMainWindow):
         )
 
     def _build_demo_page(self) -> QWidget:
+        """
+        Android-automotive style dark demo page:
+         ┌────────────────────────────────────────────────┐
+         │              HeaderBar                         │
+         ├────────────────┬───────────────────────────────┤
+         │  Bar FL  Car  Bar FR │  Mode sidebar           │
+         │  Bar RL       Bar RR │                         │
+         └────────────────┴───────────────────────────────┘
+        """
         page = QWidget()
         page.setObjectName("DemoPage")
         root = QVBoxLayout(page)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(7)
+        root.setSpacing(0)
         root.addWidget(self._build_header(), 0)
 
         content = QWidget()
         h = QHBoxLayout(content)
-        h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(0)
+        h.setContentsMargins(12, 12, 12, 12)
+        h.setSpacing(12)
 
+        # ── Canvas: bars + car diagram ─────────────────────────────────
         canvas = QFrame()
         canvas.setObjectName("Showcase")
         canvas.setMinimumHeight(0)
         cl = QGridLayout(canvas)
-        cl.setContentsMargins(24, 24, 24, 24)
-        cl.setHorizontalSpacing(28)
-        cl.setVerticalSpacing(22)
+        cl.setContentsMargins(16, 16, 16, 16)
+        cl.setHorizontalSpacing(16)
+        cl.setVerticalSpacing(12)
 
-        self.bar_fl = VerticalBar("Front Left",  "#EF4444")
-        self.bar_fr = VerticalBar("Front Right", "#EF4444")
-        self.bar_rl = VerticalBar("Rear Left",   "#EF4444")
-        self.bar_rr = VerticalBar("Rear Right",  "#EF4444")
+        self.bar_fl = VerticalBar("FL", "#00BCD4")
+        self.bar_fr = VerticalBar("FR", "#00BCD4")
+        self.bar_rl = VerticalBar("RL", "#00BCD4")
+        self.bar_rr = VerticalBar("RR", "#00BCD4")
 
-        self.car = QLabel()
-        self.car.setObjectName("CarHero")
-        self.car.setAlignment(Qt.AlignCenter)
-        self.car.setMinimumSize(460, 520)
-        self._load_car_image("car_top.png")
+        self.car_display = CarDisplayWidget()
 
         cl.addWidget(self.bar_fl, 0, 0, Qt.AlignRight | Qt.AlignVCenter)
-        cl.addWidget(self.car,    0, 1, 4, 1)
+        cl.addWidget(self.car_display, 0, 1, 4, 1)
         cl.addWidget(self.bar_fr, 0, 2, Qt.AlignLeft  | Qt.AlignVCenter)
         cl.addWidget(self.bar_rl, 2, 0, Qt.AlignRight | Qt.AlignVCenter)
         cl.addWidget(self.bar_rr, 2, 2, Qt.AlignLeft  | Qt.AlignVCenter)
+        cl.setRowStretch(0, 1)
+        cl.setRowStretch(1, 0)
+        cl.setRowStretch(2, 1)
+        cl.setRowStretch(3, 0)
+        cl.setColumnStretch(1, 1)
 
+        # ── Sidebar: mode buttons ──────────────────────────────────────
         sidebar = QWidget()
+        sidebar.setObjectName("Sidebar")
         s = QVBoxLayout(sidebar)
-        s.setContentsMargins(16, 16, 16, 16)
-        s.setSpacing(14)
+        s.setContentsMargins(8, 8, 8, 8)
+        s.setSpacing(10)
 
-        prod_card = QGroupBox("PRODUCTION")
-        prod_card.setFont(QFont("Segoe UI", 16, QFont.Bold))
+        # PRODUCTION card
+        prod_card = QFrame()
         prod_card.setObjectName("ModeCard")
         pv = QVBoxLayout(prod_card)
-        pv.setContentsMargins(14, 14, 14, 14)
-        pv.setSpacing(10)
+        pv.setContentsMargins(12, 12, 12, 12)
+        pv.setSpacing(8)
+        prod_lbl = QLabel("PRODUCTION")
+        prod_lbl.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        prod_lbl.setStyleSheet("color:#00BCD4; letter-spacing:1px;")
+        pv.addWidget(prod_lbl)
 
-        btn_fwd = QPushButton("FWD\nFront wheel drive")
-        btn_awd = QPushButton("AWD\nAll wheel drive")
-        for b in (btn_fwd, btn_awd):
-            b.setObjectName("ModeButton")
-            b.setMinimumHeight(60)
-            b.setCursor(Qt.PointingHandCursor)
-            b.setProperty("variant", "primary")
+        btn_fwd = self._make_mode_btn("FWD", "Front Wheel Drive", "#2A5298", "#3A6FCC")
+        btn_awd = self._make_mode_btn("AWD", "All Wheel Drive",   "#2A5298", "#3A6FCC")
         pv.addWidget(btn_fwd)
         pv.addWidget(btn_awd)
 
-        proto_card = QGroupBox("PROTOTYPE")
-        proto_card.setFont(QFont("Segoe UI", 16, QFont.Bold))
+        # PROTOTYPE card
+        proto_card = QFrame()
         proto_card.setObjectName("ModeCard")
         qv = QVBoxLayout(proto_card)
-        qv.setContentsMargins(14, 14, 14, 14)
-        qv.setSpacing(10)
+        qv.setContentsMargins(12, 12, 12, 12)
+        qv.setSpacing(8)
+        proto_lbl = QLabel("PROTOTYPE")
+        proto_lbl.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        proto_lbl.setStyleSheet("color:#FF8C00; letter-spacing:1px;")
+        qv.addWidget(proto_lbl)
 
-        btn_tv   = QPushButton("4WD and\nTorque Vectoring\nHandling and stability")
-        btn_lock = QPushButton("4WD and\nAxle Lock\nOff road traction")
-        for b in (btn_tv, btn_lock):
-            b.setObjectName("ModeButton")
-            b.setMinimumHeight(68)
-            b.setCursor(Qt.PointingHandCursor)
-        btn_tv.setProperty("variant",   "magenta")
-        btn_lock.setProperty("variant", "orange")
+        btn_tv   = self._make_mode_btn("TV", "4WD + Torque Vectoring\nHandling & Stability",
+                                        "#6A0DAD", "#8B2FCC")
+        btn_lock = self._make_mode_btn("LOCK", "4WD + Axle Lock\nOff-Road Traction",
+                                        "#8B4000", "#CC6600")
         qv.addWidget(btn_tv)
         qv.addWidget(btn_lock)
 
@@ -949,10 +1078,38 @@ class MainWindow(QMainWindow):
         s.addWidget(proto_card)
         s.addStretch(1)
 
-        h.addWidget(canvas, 3)
+        h.addWidget(canvas,  3)
         h.addWidget(sidebar, 2)
         root.addWidget(content, 1)
         return page
+
+    def _make_mode_btn(self, title: str, subtitle: str,
+                       color_dark: str, color_light: str) -> QPushButton:
+        btn = QPushButton()
+        btn.setText(f"{title}\n{subtitle}")
+        btn.setMinimumHeight(64)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setStyleSheet(f"""
+            QPushButton {{
+                background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                    stop:0 {color_light}, stop:1 {color_dark});
+                border: 1px solid {color_dark};
+                border-radius: 10px;
+                color: #FFFFFF;
+                font: bold 10pt "Segoe UI";
+                text-align: center;
+                padding: 8px;
+            }}
+            QPushButton:hover {{
+                background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                    stop:0 {color_light}CC, stop:1 {color_dark}CC);
+                border: 1px solid #00BCD4;
+            }}
+            QPushButton:pressed {{
+                background: {color_dark};
+            }}
+        """)
+        return btn
 
     def _build_manual_page(self) -> QWidget:
         page = QWidget()
@@ -964,6 +1121,7 @@ class MainWindow(QMainWindow):
         title = QLabel("MANUAL OVERRIDE")
         title.setFont(QFont("Segoe UI", 16, QFont.Bold))
         title.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+        title.setStyleSheet("color:#00BCD4; letter-spacing:1px;")
 
         self.manual_slider = BigSlider()
         self.manual_slider.valueChanged.connect(self._on_manual_slider_changed)
@@ -971,12 +1129,17 @@ class MainWindow(QMainWindow):
         lr = QWidget()
         lrh = QHBoxLayout(lr)
         lrh.setContentsMargins(8, 0, 8, 0)
-        lrh.addWidget(QLabel(f"{TORQUE_MIN} Nm"), 0, Qt.AlignLeft)
-        lrh.addWidget(QLabel(f"+{TORQUE_MAX} Nm"), 0, Qt.AlignRight)
+        l1 = QLabel(f"{TORQUE_MIN} Nm")
+        l2 = QLabel(f"+{TORQUE_MAX} Nm")
+        l1.setStyleSheet("color:#8A9BB0;")
+        l2.setStyleSheet("color:#8A9BB0;")
+        lrh.addWidget(l1, 0, Qt.AlignLeft)
+        lrh.addWidget(l2, 0, Qt.AlignRight)
 
         self.lbl_manual_val = QLabel("0 Nm")
-        self.lbl_manual_val.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        self.lbl_manual_val.setFont(QFont("Segoe UI", 14, QFont.Bold))
         self.lbl_manual_val.setAlignment(Qt.AlignHCenter)
+        self.lbl_manual_val.setStyleSheet("color:#00E5FF;")
 
         lay.addWidget(title)
         lay.addSpacing(100)
@@ -990,111 +1153,121 @@ class MainWindow(QMainWindow):
         app = QApplication.instance()
         app.setStyle("Fusion")
         pal = app.palette()
-        pal.setColor(QPalette.Window,          QColor(246, 248, 250))
-        pal.setColor(QPalette.Base,            QColor(255, 255, 255))
-        pal.setColor(QPalette.AlternateBase,   QColor(240, 240, 240))
-        pal.setColor(QPalette.Text,            QColor(33,  33,  33))
-        pal.setColor(QPalette.Button,          QColor(236, 236, 236))
-        pal.setColor(QPalette.ButtonText,      QColor(33,  33,  33))
-        pal.setColor(QPalette.Highlight,       QColor(58, 134, 255))
+        # Dark automotive palette
+        pal.setColor(QPalette.Window,          QColor(10,  14,  26))
+        pal.setColor(QPalette.Base,            QColor(13,  21,  32))
+        pal.setColor(QPalette.AlternateBase,   QColor(20,  30,  48))
+        pal.setColor(QPalette.Text,            QColor(200, 210, 225))
+        pal.setColor(QPalette.Button,          QColor(20,  30,  48))
+        pal.setColor(QPalette.ButtonText,      QColor(200, 210, 225))
+        pal.setColor(QPalette.Highlight,       QColor(0, 188, 212))
         pal.setColor(QPalette.HighlightedText, Qt.white)
         app.setPalette(pal)
 
         self.setStyleSheet("""
+        /* ── Left panel CAN card ── */
         QGroupBox#CanCard {
             background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
-                        stop:0 #FFFFFF, stop:1 #F5F7FB);
-            border: 1px solid #D9DEE6; border-radius: 14px; margin-top: 0px;
+                        stop:0 #0D1520, stop:1 #0A0E1A);
+            border: 1px solid #1E3A5C; border-radius: 14px; margin-top: 0px;
         }
-        QLabel#CanTitle { color: #0F172A; letter-spacing: 0.5px; }
-        QPushButton {
-            background-color: #EFF2F7; border: 1px solid #CBD5E1;
-            border-radius: 12px; color: #111827; padding: 8px 12px;
-            font: 11pt "Segoe UI";
-        }
-        QPushButton:hover   { background-color: #E7ECF5; }
-        QPushButton:pressed { background-color: #DEE5F0; }
+        QLabel#CanTitle { color: #00BCD4; letter-spacing: 0.5px; }
+
+        /* ── CAN ON / OFF buttons — green / red (unique to these) ── */
         QPushButton[variant="success"] {
             background: #16A34A; color: white; border: 1px solid #15803D;
+            border-radius: 12px; font: 11pt "Segoe UI"; padding: 8px 12px;
         }
         QPushButton[variant="success"]:hover   { background: #149247; }
         QPushButton[variant="success"]:pressed { background: #128342; }
         QPushButton[variant="danger"] {
             background: #DC2626; color: white; border: 1px solid #B91C1C;
+            border-radius: 12px; font: 11pt "Segoe UI"; padding: 8px 12px;
         }
         QPushButton[variant="danger"]:hover   { background: #C22424; }
         QPushButton[variant="danger"]:pressed { background: #AE2121; }
+
+        /* ── Start Logging — teal; Stop Logging — amber ── */
+        QPushButton[variant="log_start"] {
+            background: #006B75; color: white; border: 1px solid #00838F;
+            border-radius: 8px; font: 10pt "Segoe UI"; padding: 6px 10px;
+        }
+        QPushButton[variant="log_start"]:hover   { background: #00838F; }
+        QPushButton[variant="log_start"]:pressed { background: #005F6B; }
+        QPushButton[variant="log_stop"] {
+            background: #B45309; color: white; border: 1px solid #92400E;
+            border-radius: 8px; font: 10pt "Segoe UI"; padding: 6px 10px;
+        }
+        QPushButton[variant="log_stop"]:hover   { background: #CA6510; }
+        QPushButton[variant="log_stop"]:pressed { background: #9A4A08; }
+
+        /* ── Generic toolbar buttons ── */
+        QPushButton {
+            background-color: #1A2540; border: 1px solid #2A3A5C;
+            border-radius: 8px; color: #C8D8E8; padding: 6px 10px;
+            font: 10pt "Segoe UI";
+        }
+        QPushButton:hover   { background-color: #1E2D50; border-color: #3A4A6A; }
+        QPushButton:pressed { background-color: #162038; }
+
+        /* ── Tabs ── */
         QTabBar::tab {
-            background: #F3F4F6; color: #333; font: 11pt "Segoe UI";
-            padding: 3px 6px; border-radius: 6px; margin: 2px;
+            background: #0D1520; color: #6A7A8A; font: 11pt "Segoe UI";
+            padding: 6px 18px; border-radius: 6px; margin: 2px;
+            border: 1px solid #1A2540;
         }
-        QTabBar::tab:selected { background: #3A86FF; color: white; }
-        QTabBar::tab:hover    { background: #E0E7FF; }
+        QTabBar::tab:selected { background: #00BCD4; color: #000E14; border-color: #00BCD4; }
+        QTabBar::tab:hover    { background: #1A2D45; color: #C8D8E8; }
+        QTabWidget::pane { border: 1px solid #1A2540; border-radius: 6px; }
+
+        /* ── Demo page showcase frame ── */
         QFrame#Showcase {
-            border-radius: 16px; border: 1px solid rgba(0,0,0,0.08);
+            border-radius: 14px; border: 1px solid #1E3A5C;
             background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
-                        stop:0 #F8FAFF, stop:1 #EFF4FF);
+                        stop:0 #0A0F1E, stop:1 #0D1526);
         }
-        QLabel#CarHero { background: transparent; }
-        QGroupBox#ModeCard {
-            background: palette(Base); border: 1px solid #DFE5EF;
-            border-radius: 14px; margin-top: 30px;
+
+        /* ── Mode cards (sidebar) ── */
+        QFrame#ModeCard {
+            background: #0D1826; border: 1px solid #1E2E46;
+            border-radius: 14px;
         }
-        QGroupBox#ModeCard::title {
-            subcontrol-origin: margin; subcontrol-position: top center;
-            color: #0F172A; letter-spacing: 0.5px;
+        QFrame#Sidebar {
+            background: transparent;
         }
-        QPushButton#ModeButton {
-            background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
-                stop:0 rgba(255,255,255,0.85), stop:1 rgba(243,246,255,0.85));
-            border: 1px solid #CBD5E1; border-radius: 12px; color: #0B1324;
-            padding: 10px 12px; text-align: center; font: 10.5pt "Segoe UI";
-        }
-        QPushButton#ModeButton:hover   { background: rgba(240,243,255,0.95); }
-        QPushButton#ModeButton:pressed { background: rgba(232,237,255,1.00); }
-        QPushButton#ModeButton[variant="primary"] {
-            background: #707070; color: white; border: 1px solid #1E40AF;
-        }
-        QPushButton#ModeButton[variant="primary"]:hover   { background: #2E2E2E; }
-        QPushButton#ModeButton[variant="primary"]:pressed { background: #2E2E2E; }
-        QPushButton#ModeButton[variant="magenta"] {
-            background: #8B5CF6; color: white; border: 1px solid #6D28D9;
-        }
-        QPushButton#ModeButton[variant="magenta"]:hover   { background: #7C3AED; }
-        QPushButton#ModeButton[variant="magenta"]:pressed { background: #6D28D9; }
-        QPushButton#ModeButton[variant="orange"] {
-            background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
-                stop:0 #5DA9E9, stop:1 #1D6FC2);
-            border: 1px solid #1C5CAB; border-radius: 14px; color: white;
-            padding: 10px 12px; font: 11pt "Segoe UI";
-        }
-        QPushButton#ModeButton[variant="orange"]:hover {
-            background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
-                stop:0 #7BB9F0, stop:1 #1B63B0);
-        }
-        QPushButton#ModeButton[variant="orange"]:pressed {
-            background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
-                stop:0 #4C91CC, stop:1 #164E8A);
-        }
-        #HeaderBar  { color: #0F172A; }
-        #HeaderTitle { color: #0B1324; letter-spacing: 0.8px; }
+
+        /* ── Header ── */
+        #HeaderBar  { color: #00BCD4; }
+        #HeaderTitle { color: #FFFFFF; letter-spacing: 0.8px; }
         QLabel#HeaderLogoLeft[missingLogo="true"],
         QLabel#HeaderLogoRight[missingLogo="true"] {
-            background: rgba(0,0,0,0.03);
-            border: 1px dashed rgba(0,0,0,0.12);
+            background: rgba(0,188,212,0.05);
+            border: 1px dashed rgba(0,188,212,0.2);
         }
+
+        /* ── GroupBoxes (Measurement tab) ── */
         QGroupBox {
-            font: 10pt "Segoe UI"; color: #1E293B;
-            border: 1px solid #DFE5EF; border-radius: 10px; margin-top: 18px;
-            padding-top: 6px;
+            font: 10pt "Segoe UI"; color: #8AB8D0;
+            border: 1px solid #1E3A5C; border-radius: 10px; margin-top: 18px;
+            padding-top: 6px; background: #0A0E1A;
         }
         QGroupBox::title {
             subcontrol-origin: margin; subcontrol-position: top left;
-            left: 10px; padding: 0 4px;
+            left: 10px; padding: 0 4px; color: #00BCD4;
         }
+
+        /* ── Splitter ── */
+        QSplitter::handle { background: #1A2540; }
+
+        /* ── Status bar ── */
+        QStatusBar { background: #0A0E1A; color: #4A6A7A; }
+
+        /* ── Main window background ── */
+        QMainWindow { background: #0A0E1A; }
+        QWidget { background: #0A0E1A; color: #C8D8E8; }
         """)
 
-        def _soft_shadow(widget, blur=26, alpha=70, dy=8):
+        def _soft_shadow(widget, blur=26, alpha=120, dy=8):
             eff = QGraphicsDropShadowEffect(widget)
             eff.setOffset(0, dy)
             eff.setBlurRadius(blur)
@@ -1102,37 +1275,8 @@ class MainWindow(QMainWindow):
             widget.setGraphicsEffect(eff)
 
         for gb in self.findChildren(QGroupBox):
-            if gb.objectName() == "ModeCard":
-                _soft_shadow(gb, blur=22, alpha=60, dy=8)
-            if gb.objectName() == "CanCard":
-                eff = QGraphicsDropShadowEffect(gb)
-                eff.setOffset(0, 6)
-                eff.setBlurRadius(24)
-                eff.setColor(QColor(0, 0, 0, 60))
-                gb.setGraphicsEffect(eff)
-
-    # ──────────────────────────────────────────────────────────────────────
-    # Images
-    # ──────────────────────────────────────────────────────────────────────
-
-    def _load_car_image(self, path: str):
-        try:
-            pix = QPixmap(path)
-            if pix.isNull():
-                self.car.setText("Place top-view car image as 'car_top.png'")
-                return
-            self.car.setPixmap(
-                pix.scaled(self.car.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        except Exception:
-            self.car.setText("car_top.png not found")
-
-    def resizeEvent(self, e):
-        super().resizeEvent(e)
-        if isinstance(self.car.pixmap(), QPixmap):
-            pix = self.car.pixmap()
-            if pix:
-                self.car.setPixmap(
-                    pix.scaled(self.car.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            if gb.objectName() in ("CanCard",):
+                _soft_shadow(gb, blur=22, alpha=100, dy=6)
 
     # ──────────────────────────────────────────────────────────────────────
     # CAN ON / OFF
@@ -1207,7 +1351,6 @@ class MainWindow(QMainWindow):
         self._ui_can_buttons_enabled(True)
 
     def closeEvent(self, e):
-        # Stop flush timer first so no more widget updates
         self._log_flush_timer.stop()
         try:
             self._stop_periodic()
@@ -1244,13 +1387,21 @@ class MainWindow(QMainWindow):
 
     def _on_save_log(self):
         """
-        FIX: Stop all threads before opening the file dialog so Qt doesn't
-        destroy a running thread while the blocking dialog is open.
-        We pause the reader (don't destroy it) and resume after saving.
+        Fixed: snapshot ring buffer under mutex FIRST, then open file dialog.
+        No blocking dialog while threads are actively writing.
         """
-        # Flush what we have first
+        # 1. Flush pending lines into the widget first (cosmetic only)
         self._flush_log_to_view()
 
+        # 2. Snapshot ring atomically — this is the fix for the save issue
+        with QMutexLocker(self._log_mutex):
+            lines_snapshot = list(self._log_ring)
+
+        if not lines_snapshot:
+            QMessageBox.information(self, "Save Log", "Log is empty — nothing to save.")
+            return
+
+        # 3. Open save dialog (outside mutex — safe because snapshot is local)
         path, _ = QFileDialog.getSaveFileName(
             self, "Save CAN Log", "can_log.txt",
             "Text Files (*.txt);;CSV Files (*.csv);;All Files (*)"
@@ -1258,17 +1409,11 @@ class MainWindow(QMainWindow):
         if not path:
             return
 
-        # Snapshot the ring under the mutex so no thread can write while we iterate
-        with QMutexLocker(self._log_mutex):
-            lines_snapshot = list(self._log_ring)
-
         try:
             with open(path, "w", encoding="utf-8") as f:
-                # Write a header
                 f.write(
                     f"# CAN Log — saved {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                    f"# [HH:MM:SS.mmm]  Dir  ID      DLC  "
-                    f"B0    B1    B2    B3    B4    B5    B6    B7\n"
+                    f"# {_LOG_HEADER}\n"
                 )
                 f.write("\n".join(lines_snapshot))
                 f.write("\n")
@@ -1308,8 +1453,6 @@ class MainWindow(QMainWindow):
             self._log_ring.clear()
             self._log_pending.clear()
         self.log_view.clear()
-        self._total_msg_count = 0
-        self.lbl_msg_count.setText("0 msgs")
 
     # ──────────────────────────────────────────────────────────────────────
     # Logging / Periodic TX
@@ -1362,8 +1505,6 @@ class MainWindow(QMainWindow):
             if self.filter_ids and (msg.arbitration_id not in self.filter_ids):
                 continue
 
-            self._total_msg_count += 1
-
             if self.logging_enabled:
                 ts_ms = int((msg.timestamp % 86400) * 1000) if msg.timestamp else 0
                 hh = ts_ms // 3_600_000;  ts_ms %= 3_600_000
@@ -1385,9 +1526,6 @@ class MainWindow(QMainWindow):
             with QMutexLocker(self._log_mutex):
                 self._log_ring.extend(log_lines_batch)
                 self._log_pending.extend(log_lines_batch)
-
-        # Update counter label every batch (cheap)
-        self.lbl_msg_count.setText(f"{self._total_msg_count:,} msgs")
 
         if latest_torque is not None:
             try:
@@ -1419,8 +1557,8 @@ class MainWindow(QMainWindow):
                          data_bytes: list, dlc: int,
                          hh: int, mm: int, ss: int, ms: int) -> str:
         """
-        Fixed-width columns for monospace display:
-        [HH:MM:SS.mmm]  Dir   ID      DLC   B0    B1    B2 …
+        Columns exactly match _LOG_HEADER width:
+        [HH:MM:SS.mmm]   Dir   ID      DLC   B0    B1    B2    B3    B4    B5    B6    B7
         """
         dlc    = max(0, min(8, dlc))
         padded = (list(data_bytes) + [None] * 8)[:8]
@@ -1431,7 +1569,7 @@ class MainWindow(QMainWindow):
         dir_col = "RX" if direction == "RX" else "TX"
         return (
             f"[{hh:02d}:{mm:02d}:{ss:02d}.{ms:03d}]"
-            f"  {dir_col}   {arb_id:04X}    {dlc}     {bytes_str}"
+            f"   {dir_col}   {arb_id:04X}    {dlc}     {bytes_str}"
         )
 
     # ──────────────────────────────────────────────────────────────────────
@@ -1439,25 +1577,17 @@ class MainWindow(QMainWindow):
     # ──────────────────────────────────────────────────────────────────────
 
     def _info(self, line: str):
-        """Non-CAN info messages — always shown, flushed immediately."""
         ts = time.strftime("%H:%M:%S")
-        full = f"[{ts}.000]  --   ----    -     {line}"
+        full = f"[{ts}.000]   --   ----    -     {line}"
         with QMutexLocker(self._log_mutex):
             self._log_ring.append(full)
             self._log_pending.append(full)
         self._flush_log_to_view()
 
     def _flush_log_to_view(self):
-        """
-        Called every LOG_FLUSH_MS ms (80 ms → ~12 Hz).
-        Drains _log_pending into the CanLogView widget.
-        Skipped entirely when the Measurement tab is not visible.
-        """
         if self._on_main_tab:
-            # Not on Measurement tab — keep pending capped, skip widget update
             with QMutexLocker(self._log_mutex):
                 if len(self._log_pending) > 2000:
-                    # Discard oldest pending (they'll be in _log_ring for Save)
                     excess = len(self._log_pending) - 2000
                     for _ in range(excess):
                         self._log_pending.popleft()
@@ -1493,7 +1623,6 @@ class MainWindow(QMainWindow):
         rr = self._decode_s8_signed(d[3]) * SCALE
         self.v_fl, self.v_fr, self.v_rl, self.v_rr = fl, fr, rl, rr
 
-        # Live signal labels (always update — very cheap)
         self.lbl_fl.setText(f"{fl:+5d} Nm")
         self.lbl_fr.setText(f"{fr:+5d} Nm")
         self.lbl_rl.setText(f"{rl:+5d} Nm")
@@ -1518,7 +1647,7 @@ class MainWindow(QMainWindow):
         self.lbl_status.setText(f"0x{st:02X}")
         self.lbl_error.setText(f"0x{er:02X}")
         self.lbl_estop.setText("⚠ ACTIVE" if es else "OK")
-        self.lbl_estop.setStyleSheet("color: #DC2626;" if es else "color: #16A34A;")
+        self.lbl_estop.setStyleSheet("color: #FF4444;" if es else "color: #00BCD4;")
         self.lbl_slip.setText(f"{slip:+d} deg")
 
     # ──────────────────────────────────────────────────────────────────────
@@ -1568,7 +1697,6 @@ class MainWindow(QMainWindow):
         self._update_bars_visibility()
         if self._on_main_tab and self._on_demo_page:
             self._push_bars(self.v_fl, self.v_fr, self.v_rl, self.v_rr)
-        # Flush pending lines when switching TO measurement tab
         if not self._on_main_tab:
             self._flush_log_to_view()
 
