@@ -6,18 +6,20 @@ from typing import Optional, Set, List
 from collections import deque
 
 from PySide6.QtCore import (
-    Qt, QThread, Signal, QTimer, QSize, QRect, Property, QPropertyAnimation,
-    QEasingCurve, QRectF
+    Qt, QThread, Signal, QTimer, QSize, QRect, QRectF,
+    QMutex, QMutexLocker
 )
 from PySide6.QtGui import (
-    QColor, QPainter, QFont, QPalette, QPixmap, QPen, QLinearGradient, QTextCursor
+    QColor, QPainter, QFont, QPalette, QPixmap, QPen,
+    QLinearGradient, QTextCursor, QFontMetrics, QTextCharFormat,
+    QBrush
 )
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QVBoxLayout,
     QHBoxLayout, QGroupBox, QFormLayout, QPlainTextEdit, QFileDialog,
     QInputDialog, QMessageBox, QSplitter, QSizePolicy, QStatusBar, QTabWidget,
     QSlider, QGridLayout, QStackedWidget, QGraphicsDropShadowEffect, QStyle,
-    QFrame
+    QFrame, QScrollBar
 )
 
 import can
@@ -26,22 +28,27 @@ import can
 #         Constants
 # ===========================
 
-BITRATE = 250000
-CAN_CHANNEL_LINUX = "can0"
-CAN_IFACE_LINUX = "socketcan"
-CAN_IFACE_WINDOWS = "vector"
+BITRATE         = 250000
+CAN_CHANNEL_LINUX  = "can0"
+CAN_IFACE_LINUX    = "socketcan"
+CAN_IFACE_WINDOWS  = "vector"
 
-# FIX: Updated torque range to -500..+500 Nm
 TORQUE_MIN = -500
 TORQUE_MAX = +500
 TORQUE_ENDIAN = "little"
+
+# Log ring-buffer hard cap (lines stored in memory)
+LOG_RING_MAX    = 20_000
+# Max blocks shown in the QPlainTextEdit widget
+LOG_WIDGET_MAX  = 3_000
+# How often (ms) the log widget is refreshed from the pending queue
+LOG_FLUSH_MS    = 80
 
 # ===========================
 #       Custom Widgets
 # ===========================
 
 class StatusIndicator(QWidget):
-    """Dot + text with glow."""
     def __init__(self, text="OFF", color=QColor('#C62828'), parent=None):
         super().__init__(parent)
         self._dot_size = 20
@@ -69,16 +76,13 @@ class StatusIndicator(QWidget):
     def set_color(self, color: QColor):
         r = self._dot_size // 2
         self.dot.setStyleSheet(
-            f"background-color:{color.name()}; border-radius:{r}px; border: 1px solid rgba(0,0,0,0.18);"
+            f"background-color:{color.name()}; border-radius:{r}px;"
+            f" border: 1px solid rgba(0,0,0,0.18);"
         )
         self._glow.setColor(color)
 
 
 class VerticalBar(QWidget):
-    """
-    FIX: Removed QPropertyAnimation entirely. Direct paint on set_value().
-    Signed vertical bar, 0 in the middle. No animation lag.
-    """
     def __init__(self, label_text: str = "", color: str = "#E53935", parent=None):
         super().__init__(parent)
         self._min_value = TORQUE_MIN
@@ -100,12 +104,11 @@ class VerticalBar(QWidget):
         self.update()
 
     def set_value(self, v: int):
-        """FIX: Direct update, no animation, triggers immediate repaint."""
         v = max(self._min_value, min(self._max_value, int(v)))
         if v != self._value:
             self._value = v
             self.setToolTip(f"{self._label}: {v}")
-            self.update()  # schedules a single repaint, very cheap
+            self.update()
 
     def value(self) -> int:
         return self._value
@@ -131,7 +134,7 @@ class VerticalBar(QWidget):
         p.drawLine(inner.left(), zero_y, inner.right(), zero_y)
 
         half_h = inner.height() / 2.0
-        v = float(self._value)
+        v    = float(self._value)
         vmin = float(self._min_value)
         vmax = float(self._max_value)
 
@@ -143,14 +146,12 @@ class VerticalBar(QWidget):
             h = int(half_h * frac)
             if h > 0:
                 top = int(zero_y - h)
-                fill_rect = QRect(inner.left(), top, inner.width(), h)
-                p.drawRoundedRect(fill_rect, 4, 4)
+                p.drawRoundedRect(QRect(inner.left(), top, inner.width(), h), 4, 4)
         elif v < 0.0 and vmin < 0.0:
             frac = min(1.0, abs(v) / abs(vmin))
             h = int(half_h * frac)
             if h > 0:
-                fill_rect = QRect(inner.left(), int(zero_y), inner.width(), h)
-                p.drawRoundedRect(fill_rect, 4, 4)
+                p.drawRoundedRect(QRect(inner.left(), int(zero_y), inner.width(), h), 4, 4)
 
         p.setPen(QColor("#666"))
         p.drawLine(outer.left() - 10, int(zero_y), outer.left(), int(zero_y))
@@ -163,7 +164,6 @@ class VerticalBar(QWidget):
 
 
 class ToggleSwitch(QPushButton):
-    """Single toggle: left=Manual, right=Demo."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setCheckable(True)
@@ -180,7 +180,7 @@ class ToggleSwitch(QPushButton):
         p.setBrush(QColor("#B0B0B0") if self.isChecked() else QColor("#3A86FF"))
         p.drawRoundedRect(rect, rect.height() / 2, rect.height() / 2)
         margin = 3
-        d = rect.height() - 2 * margin
+        d  = rect.height() - 2 * margin
         cx = rect.right() - margin - d if self.isChecked() else rect.left() + margin
         knob = QRect(cx, rect.top() + margin, d, d)
         p.setBrush(QColor("#FFFFFF"))
@@ -188,7 +188,6 @@ class ToggleSwitch(QPushButton):
 
 
 class BigSlider(QSlider):
-    """FIX: Range changed to -500..+500 Nm."""
     def __init__(self, parent=None):
         super().__init__(Qt.Horizontal, parent)
         self.setRange(TORQUE_MIN, TORQUE_MAX)
@@ -198,24 +197,91 @@ class BigSlider(QSlider):
         self.setFixedHeight(58)
         self.setStyleSheet("""
             QSlider::groove:horizontal {
-                height: 26px;
-                margin: 18px 22px;
-                border-radius: 13px;
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                            stop:0 #EDEDED, stop:1 #D3D3D3);
+                height: 26px; margin: 18px 22px; border-radius: 13px;
+                background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                            stop:0 #EDEDED, stop:1 #D3D3D3);
                 border: 1px solid #B5B5B5;
             }
             QSlider::handle:horizontal {
-                background: #1565C0;
-                border: 1px solid #0D47A1;
-                width: 46px;
-                height: 46px;
-                margin: -12px -8px;
-                border-radius: 8px;
+                background: #1565C0; border: 1px solid #0D47A1;
+                width: 46px; height: 46px; margin: -12px -8px; border-radius: 8px;
             }
-            QSlider::handle:horizontal:hover { background: #1B74E4; }
+            QSlider::handle:horizontal:hover   { background: #1B74E4; }
             QSlider::handle:horizontal:pressed { background: #0F5AB8; }
         """)
+
+
+# ===========================
+#     Efficient Log Widget
+# ===========================
+
+class CanLogView(QPlainTextEdit):
+    """
+    A QPlainTextEdit tuned for high-rate CAN log display.
+    - Fixed-width font for column alignment
+    - Hard block cap to prevent memory growth
+    - appendBatch() accepts a list[str] and appends them in one document operation
+    - Auto-scroll pinned to bottom unless user scrolls up
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.setMaximumBlockCount(LOG_WIDGET_MAX)
+        self.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.setUndoRedoEnabled(False)
+
+        font = QFont("Consolas", 9)
+        font.setStyleHint(QFont.Monospace)
+        self.setFont(font)
+
+        self.setStyleSheet("""
+            QPlainTextEdit {
+                background: #0D1117;
+                color: #C9D1D9;
+                border: 1px solid #30363D;
+                border-radius: 6px;
+                padding: 4px 6px;
+                selection-background-color: #264F78;
+            }
+            QScrollBar:vertical {
+                background: #161B22; width: 10px; border-radius: 5px;
+            }
+            QScrollBar::handle:vertical {
+                background: #30363D; border-radius: 5px; min-height: 20px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+            QScrollBar:horizontal {
+                background: #161B22; height: 10px; border-radius: 5px;
+            }
+            QScrollBar::handle:horizontal {
+                background: #30363D; border-radius: 5px; min-width: 20px;
+            }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }
+        """)
+
+        self._auto_scroll = True
+        vbar = self.verticalScrollBar()
+        vbar.valueChanged.connect(self._on_vbar_changed)
+
+    def _on_vbar_changed(self, val: int):
+        vbar = self.verticalScrollBar()
+        self._auto_scroll = (val >= vbar.maximum() - 4)
+
+    def appendBatch(self, lines: list):
+        """Append multiple lines in a single document operation — much faster than appendPlainText loop."""
+        if not lines:
+            return
+        text = "\n".join(lines)
+        # Move cursor to end and insert block
+        cursor = self.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        if self.document().blockCount() > 1:
+            cursor.insertText("\n" + text)
+        else:
+            cursor.insertText(text)
+        if self._auto_scroll:
+            vbar = self.verticalScrollBar()
+            vbar.setValue(vbar.maximum())
 
 
 # ===========================
@@ -224,10 +290,10 @@ class BigSlider(QSlider):
 
 class CanReaderThread(QThread):
     """
-    FIX: Uses a deque-based batch emit to avoid flooding the GUI thread.
-    Emits a batch of messages every ~16ms instead of per-message signals.
+    Reads CAN messages; emits batches every ~16 ms so the GUI thread
+    is never flooded at 100 msg/s (10 ms period).
     """
-    messages_batch = Signal(list)   # emits list of can.Message
+    messages_batch = Signal(list)
     interface_down = Signal(str)
 
     def __init__(self, bus: can.BusABC):
@@ -236,17 +302,16 @@ class CanReaderThread(QThread):
         self._running = True
 
     def run(self):
-        batch = []
+        batch: list = []
         last_emit = time.monotonic()
 
         while self._running:
             try:
-                msg = self._bus.recv(timeout=0.016)  # 16ms timeout
+                msg = self._bus.recv(timeout=0.016)
                 if msg is not None:
                     batch.append(msg)
 
                 now = time.monotonic()
-                # Emit batch every 16ms regardless of how many messages arrived
                 if now - last_emit >= 0.016:
                     if batch:
                         self.messages_batch.emit(batch)
@@ -269,11 +334,11 @@ class PeriodicTxThread(QThread):
 
     def __init__(self, bus: can.BusABC, arb_id=0x200, payload=None, period_sec=1.0):
         super().__init__()
-        self._bus = bus
+        self._bus     = bus
         self._running = True
-        self._arb_id = arb_id
-        self._data = payload if payload is not None else [0x3C]
-        self._period = max(0.05, float(period_sec))
+        self._arb_id  = arb_id
+        self._data    = payload if payload is not None else [0x3C]
+        self._period  = max(0.05, float(period_sec))
 
     def run(self):
         while self._running:
@@ -301,18 +366,15 @@ class CanOpenThread(QThread):
             if sysname == "Windows":
                 try:
                     bus = can.interface.Bus(
-                        interface=CAN_IFACE_WINDOWS,
-                        channel=0,
-                        bitrate=BITRATE
-                    )
+                        interface=CAN_IFACE_WINDOWS, channel=0, bitrate=BITRATE)
                 except Exception as e:
                     self.failed.emit(f"Vector open failed: {e}")
                     return
                 self.opened.emit(bus)
                 return
 
-            cmd = ["sudo", "ip", "link", "set", CAN_CHANNEL_LINUX, "up",
-                   "type", "can", "bitrate", str(BITRATE)]
+            cmd = ["sudo", "ip", "link", "set", CAN_CHANNEL_LINUX,
+                   "up", "type", "can", "bitrate", str(BITRATE)]
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode != 0:
                 stderr = (result.stderr or "").strip()
@@ -321,7 +383,8 @@ class CanOpenThread(QThread):
                     return
 
             try:
-                bus = can.interface.Bus(channel=CAN_CHANNEL_LINUX, interface=CAN_IFACE_LINUX)
+                bus = can.interface.Bus(
+                    channel=CAN_CHANNEL_LINUX, interface=CAN_IFACE_LINUX)
             except Exception as e:
                 self.failed.emit(f"socketcan open failed: {e}")
                 return
@@ -343,8 +406,6 @@ class HeaderBar(QWidget):
                  parent=None):
         super().__init__(parent)
         self._title = title
-        self._left_logo_path = left_logo_path
-        self._right_logo_path = right_logo_path
         self.setMinimumHeight(70)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setObjectName("HeaderBar")
@@ -363,14 +424,14 @@ class HeaderBar(QWidget):
         self.leftLogo.setObjectName("HeaderLogoLeft")
         self.leftLogo.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.leftLogo.setMinimumSize(160, 64)
-        self._set_logo(self.leftLogo, self._left_logo_path, QSize(220, 64))
+        self._set_logo(self.leftLogo, left_logo_path, QSize(220, 64))
 
         titleWrap = QWidget()
         tl = QVBoxLayout(titleWrap)
         tl.setContentsMargins(0, 0, 0, 0)
         tl.setSpacing(2)
 
-        self.titleLbl = QLabel(self._title)
+        self.titleLbl = QLabel(title)
         self.titleLbl.setObjectName("HeaderTitle")
         self.titleLbl.setAlignment(Qt.AlignCenter)
         self.titleLbl.setFont(QFont("Segoe UI", 20, QFont.Black))
@@ -380,7 +441,7 @@ class HeaderBar(QWidget):
         self.rightLogo.setObjectName("HeaderLogoRight")
         self.rightLogo.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.rightLogo.setMinimumSize(160, 64)
-        self._set_logo(self.rightLogo, self._right_logo_path, QSize(220, 64))
+        self._set_logo(self.rightLogo, right_logo_path, QSize(220, 64))
 
         root.addWidget(self.leftLogo, 1)
         root.addWidget(titleWrap, 2)
@@ -404,7 +465,8 @@ class HeaderBar(QWidget):
                 label.setMinimumSize(size_hint)
                 label.setProperty("missingLogo", True)
             else:
-                label.setPixmap(pix.scaled(size_hint, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                label.setPixmap(
+                    pix.scaled(size_hint, Qt.KeepAspectRatio, Qt.SmoothTransformation))
                 label.setMinimumSize(size_hint)
                 label.setProperty("missingLogo", False)
         except Exception:
@@ -459,54 +521,46 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Torque Vectoring HMI")
         self.resize(1280, 800)
 
-        self.bus: Optional[can.BusABC] = None
-        self.reader_thread: Optional[CanReaderThread] = None
+        self.bus:             Optional[can.BusABC]       = None
+        self.reader_thread:   Optional[CanReaderThread]  = None
         self.periodic_thread: Optional[PeriodicTxThread] = None
-        self.open_thread: Optional[CanOpenThread] = None
+        self.open_thread:     Optional[CanOpenThread]    = None
 
-        self.filter_ids: Set[int] = set()
-        self.log_lines: List[str] = []
-        self.logging_enabled: bool = False
+        self.filter_ids:      Set[int]   = set()
+        self.logging_enabled: bool       = False
 
-        # Last received torques (raw bytes from 0x20, 4 bytes)
-        self.v_fl = 0
-        self.v_fr = 0
-        self.v_rl = 0
-        self.v_rr = 0
+        # Per-wheel latest values
+        self.v_fl = self.v_fr = self.v_rl = self.v_rr = 0
 
-        # FIX: Track which page is active to skip bar updates when not visible
-        self._bars_visible = True   # True = on Main tab + Demo page
-        self._on_main_tab = True
-        self._on_demo_page = True
+        # Page-visibility flags (skip bar repaints when not visible)
+        self._on_main_tab   = True
+        self._on_demo_page  = True
+        self._bars_visible  = True
 
-        # FIX: Log buffer — batch append to QPlainTextEdit to avoid per-line overhead
-        self._log_buffer: deque = deque(maxlen=5000)
-        self._pending_log_lines: List[str] = []
+        # ── Ring buffer (thread-safe via mutex) ──────────────────────────────
+        # All CAN logging writes here; GUI reads every LOG_FLUSH_MS ms
+        self._log_mutex       = QMutex()
+        self._log_ring:  deque = deque(maxlen=LOG_RING_MAX)   # persisted for Save
+        self._log_pending: deque = deque(maxlen=10_000)        # waiting to be shown
 
-        # Build UI
         self._build_ui()
         self._setup_theme()
         self._set_status_off()
 
-        # FIX: Log flush timer — flushes accumulated log lines every 100ms
-        # This prevents the log view from being updated 100x/sec at 10ms CAN rate
+        # Flush timer: push pending lines into the visible widget
         self._log_flush_timer = QTimer(self)
-        self._log_flush_timer.setInterval(100)   # flush every 100ms
+        self._log_flush_timer.setInterval(LOG_FLUSH_MS)
         self._log_flush_timer.timeout.connect(self._flush_log_to_view)
         self._log_flush_timer.start()
 
-        # FIX: Removed bars_timer — bars now update directly from CAN RX callback
-
-    # -----------------------------------------------------------------------
-    # Bar visibility control
-    # -----------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────────
+    # Bar visibility helpers
+    # ──────────────────────────────────────────────────────────────────────
 
     def _update_bars_visibility(self):
-        """FIX: Only update bars when Main tab is active AND Demo page is shown."""
         self._bars_visible = self._on_main_tab and self._on_demo_page
 
     def _push_bars(self, fl: int, fr: int, rl: int, rr: int):
-        """FIX: Only push if bars are visible. Immediate, no animation."""
         if not self._bars_visible:
             return
         self.bar_fl.set_value(fl)
@@ -514,9 +568,9 @@ class MainWindow(QMainWindow):
         self.bar_rl.set_value(rl)
         self.bar_rr.set_value(rr)
 
-    # -----------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────────
     # CAN TX helper
-    # -----------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────────
 
     def _send_button_cmd(self, arb_id: int, data_bytes: list) -> None:
         if not self.bus:
@@ -526,7 +580,8 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "CAN TX", f"Invalid 11-bit ID: {hex(arb_id)}")
             return
         if not (0 <= len(data_bytes) <= 8):
-            QMessageBox.critical(self, "CAN TX", f"Payload length must be 0..8, got {len(data_bytes)}")
+            QMessageBox.critical(self, "CAN TX",
+                                 f"Payload length must be 0..8, got {len(data_bytes)}")
             return
         try:
             data = bytearray(int(b) & 0xFF for b in data_bytes)
@@ -536,13 +591,13 @@ class MainWindow(QMainWindow):
         msg = can.Message(arbitration_id=arb_id, is_extended_id=False, data=data)
         try:
             self.bus.send(msg, timeout=0.1)
-            self._append_trace_tx(arb_id, data)
+            self._record_tx(arb_id, data)
         except can.CanError as e:
             QMessageBox.critical(self, "CAN TX Error", f"Message NOT sent:\n{e}")
 
-    # -----------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────────
     # UI Build
-    # -----------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
         self.setStatusBar(QStatusBar(self))
@@ -550,7 +605,7 @@ class MainWindow(QMainWindow):
         splitter.setChildrenCollapsible(False)
         self.setCentralWidget(splitter)
 
-        # Left slim panel
+        # ── Left slim panel ───────────────────────────────────────────────
         left = QWidget()
         lv = QVBoxLayout(left)
         lv.setContentsMargins(16, 16, 16, 16)
@@ -568,7 +623,8 @@ class MainWindow(QMainWindow):
         tr.setSpacing(8)
         title_icon = QLabel()
         title_icon.setFixedSize(22, 22)
-        title_icon.setPixmap(self.style().standardIcon(QStyle.SP_ComputerIcon).pixmap(22, 22))
+        title_icon.setPixmap(
+            self.style().standardIcon(QStyle.SP_ComputerIcon).pixmap(22, 22))
         ltitle = QLabel("CAN STATUS")
         ltitle.setFont(QFont("Segoe UI", 12, QFont.Bold))
         ltitle.setObjectName("CanTitle")
@@ -577,8 +633,10 @@ class MainWindow(QMainWindow):
         tr.addStretch(0)
 
         self.status_ind = StatusIndicator("OFF", QColor("#C62828"))
-        self.btn_on = QPushButton(self.style().standardIcon(QStyle.SP_DialogApplyButton), " Turn ON")
-        self.btn_off = QPushButton(self.style().standardIcon(QStyle.SP_DialogCancelButton), " Turn OFF")
+        self.btn_on  = QPushButton(
+            self.style().standardIcon(QStyle.SP_DialogApplyButton),  " Turn ON")
+        self.btn_off = QPushButton(
+            self.style().standardIcon(QStyle.SP_DialogCancelButton), " Turn OFF")
         for b in (self.btn_on, self.btn_off):
             b.setMinimumHeight(44)
             b.setIconSize(QSize(18, 18))
@@ -600,7 +658,7 @@ class MainWindow(QMainWindow):
         lv.addStretch(1)
         splitter.addWidget(left)
 
-        # Right: tabs
+        # ── Right tabs ────────────────────────────────────────────────────
         self.tabs = QTabWidget()
         splitter.addWidget(self.tabs)
         splitter.setStretchFactor(0, 0)
@@ -614,7 +672,7 @@ class MainWindow(QMainWindow):
         main_l.setSpacing(8)
 
         self.stack = QStackedWidget()
-        self.page_demo = self._build_demo_page()
+        self.page_demo   = self._build_demo_page()
         self.page_manual = self._build_manual_page()
         self.stack.addWidget(self.page_demo)    # 0 = Demo
         self.stack.addWidget(self.page_manual)  # 1 = Manual
@@ -625,11 +683,11 @@ class MainWindow(QMainWindow):
         tr2.setContentsMargins(0, 8, 0, 0)
         tr2.setSpacing(12)
         lbl_manual = QLabel("MANUAL OVERRIDE")
-        lbl_demo = QLabel("DEMO MODES")
+        lbl_demo   = QLabel("DEMO MODES")
         lbl_manual.setFont(QFont("Segoe UI", 10, QFont.Bold))
         lbl_demo.setFont(QFont("Segoe UI", 10, QFont.Bold))
         self.toggle = ToggleSwitch()
-        self.toggle.setChecked(True)  # start in Demo
+        self.toggle.setChecked(True)
         self.toggle.clicked.connect(self._on_toggle_changed)
         tr2.addStretch(1)
         tr2.addWidget(lbl_manual)
@@ -640,69 +698,144 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_main, "Main")
 
         # Measurement tab
+        self._build_measurement_tab()
+
+        # Help tab
+        self.tab_help = QWidget()
+        help_lay = QVBoxLayout(self.tab_help)
+        help_lay.setContentsMargins(20, 20, 20, 20)
+        help_text = QLabel(
+            "Torque Vectoring HMI\n\n"
+            "• Main tab — Demo / Manual control\n"
+            "• Measurement tab — CAN log and live signal display\n\n"
+            "CAN messages:\n"
+            "  0x20  →  Torque feedback (FL, FR, RL, RR) — 4 bytes\n"
+            "  0x12  →  Diagnostic signals — 8 bytes\n"
+            "  0x40  ←  Manual torque command — 2 bytes (signed int16, little-endian)\n\n"
+            "Manual slider range: -500 Nm … +500 Nm\n\n"
+            "Log columns:  [HH:MM:SS.mmm]  Dir  ID(hex)  DLC  B0 B1 B2 B3 B4 B5 B6 B7\n"
+        )
+        help_text.setWordWrap(True)
+        help_text.setFont(QFont("Segoe UI", 11))
+        help_lay.addWidget(help_text)
+        self.tabs.addTab(self.tab_help, "Help")
+
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+
+    def _build_measurement_tab(self):
+        """
+        Measurement tab layout:
+          ┌──────────────────────────────────────────────┐
+          │  [toolbar buttons]                           │
+          ├──────────────────────────────────────────────┤
+          │                                              │
+          │   CAN Log  (large, ~60 % height)             │
+          │                                              │
+          ├──────────────────────────────────────────────┤
+          │  Torque Signals (0x20)  │  Diagnostics (0x12)│
+          └──────────────────────────────────────────────┘
+        """
         self.tab_logs = QWidget()
         log_l = QVBoxLayout(self.tab_logs)
-        log_l.setContentsMargins(12, 12, 12, 12)
-        log_l.setSpacing(10)
+        log_l.setContentsMargins(10, 10, 10, 10)
+        log_l.setSpacing(8)
 
+        # ── Toolbar ───────────────────────────────────────────────────────
         btn_row = QWidget()
         br = QHBoxLayout(btn_row)
-        br.setSpacing(8)
-        self.btn_start_log = QPushButton("Start Logging")
-        self.btn_stop_log = QPushButton("Stop Logging")
-        self.btn_start_periodic = QPushButton("Start Periodic TX")
-        self.btn_stop_periodic = QPushButton("Stop Periodic TX")
-        self.btn_save = QPushButton("Save Log")
-        self.btn_filter = QPushButton("Set Filter")
-        self.btn_clear = QPushButton("Clear Window")
-        for b in (self.btn_start_log, self.btn_stop_log, self.btn_start_periodic,
-                  self.btn_stop_periodic, self.btn_save, self.btn_filter, self.btn_clear):
+        br.setContentsMargins(0, 0, 0, 0)
+        br.setSpacing(6)
+
+        self.btn_start_log      = QPushButton("▶  Start Logging")
+        self.btn_stop_log       = QPushButton("■  Stop Logging")
+        self.btn_start_periodic = QPushButton("⟳  Start Periodic TX")
+        self.btn_stop_periodic  = QPushButton("⊘  Stop Periodic TX")
+        self.btn_save           = QPushButton("💾  Save Log")
+        self.btn_filter         = QPushButton("⧖  Set Filter")
+        self.btn_clear          = QPushButton("🗑  Clear")
+
+        self.btn_start_log.setProperty("variant", "success")
+        self.btn_stop_log.setProperty("variant",  "danger")
+
+        for b in (self.btn_start_log, self.btn_stop_log,
+                  self.btn_start_periodic, self.btn_stop_periodic,
+                  self.btn_save, self.btn_filter, self.btn_clear):
+            b.setMinimumHeight(34)
+            b.setCursor(Qt.PointingHandCursor)
             br.addWidget(b)
         br.addStretch(1)
+
+        # stats label
+        self.lbl_msg_count = QLabel("0 msgs")
+        self.lbl_msg_count.setFont(QFont("Consolas", 9))
+        self.lbl_msg_count.setStyleSheet("color: #888; padding: 0 8px;")
+        br.addWidget(self.lbl_msg_count)
+
         log_l.addWidget(btn_row)
 
-        self.log_view = QPlainTextEdit()
-        self.log_view.setReadOnly(True)
-        self.log_view.setMaximumBlockCount(2000)   # FIX: reduced from 5000 to ease rendering
-        self.log_view.setLineWrapMode(QPlainTextEdit.NoWrap)
-        log_l.addWidget(self.log_view, 3)
+        # ── Log header label ─────────────────────────────────────────────
+        hdr = QLabel(
+            " [HH:MM:SS.mmm]   Dir   ID      DLC   "
+            "B0    B1    B2    B3    B4    B5    B6    B7"
+        )
+        hdr.setFont(QFont("Consolas", 9, QFont.Bold))
+        hdr.setStyleSheet(
+            "background:#161B22; color:#8B949E; border:1px solid #30363D;"
+            "border-radius:4px; padding:3px 6px;"
+        )
+        log_l.addWidget(hdr)
 
-        signals_row = QWidget()
-        sr = QHBoxLayout(signals_row)
-        sr.setSpacing(12)
+        # ── Log view (big) ────────────────────────────────────────────────
+        self.log_view = CanLogView()
+        self.log_view.setMinimumHeight(260)
+        log_l.addWidget(self.log_view, 5)          # stretch = 5  → takes most space
 
-        # FIX: Label updated to 0x20 per new requirement
-        torque_box = QGroupBox("Torque Signals - Rx (0x20)")
+        # ── Signals row ───────────────────────────────────────────────────
+        signals_splitter = QSplitter(Qt.Horizontal)
+
+        torque_box = QGroupBox("Torque Signals — Rx  0x20")
+        torque_box.setFont(QFont("Segoe UI", 10, QFont.Bold))
         form1 = QFormLayout(torque_box)
+        form1.setHorizontalSpacing(16)
+        form1.setVerticalSpacing(6)
         self.lbl_fl = QLabel("-")
         self.lbl_fr = QLabel("-")
         self.lbl_rl = QLabel("-")
         self.lbl_rr = QLabel("-")
         for w in (self.lbl_fl, self.lbl_fr, self.lbl_rl, self.lbl_rr):
-            w.setFont(QFont("Consolas", 10))
-        form1.addRow("Front Left:", self.lbl_fl)
+            w.setFont(QFont("Consolas", 11, QFont.Bold))
+            w.setMinimumWidth(90)
+        form1.addRow("Front Left: ", self.lbl_fl)
         form1.addRow("Front Right:", self.lbl_fr)
-        form1.addRow("Rear Left:", self.lbl_rl)
-        form1.addRow("Rear Right:", self.lbl_rr)
+        form1.addRow("Rear Left:  ", self.lbl_rl)
+        form1.addRow("Rear Right: ", self.lbl_rr)
 
-        diag_box = QGroupBox("Diagnostic Signals - Rx (0x12)")
+        diag_box = QGroupBox("Diagnostic Signals — Rx  0x12")
+        diag_box.setFont(QFont("Segoe UI", 10, QFont.Bold))
         form2 = QFormLayout(diag_box)
+        form2.setHorizontalSpacing(16)
+        form2.setVerticalSpacing(6)
         self.lbl_drive_mode = QLabel("-")
-        self.lbl_status = QLabel("-")
-        self.lbl_error = QLabel("-")
-        self.lbl_estop = QLabel("-")
-        self.lbl_slip = QLabel("-")
-        for w in (self.lbl_drive_mode, self.lbl_status, self.lbl_error, self.lbl_estop, self.lbl_slip):
-            w.setFont(QFont("Consolas", 10))
+        self.lbl_status     = QLabel("-")
+        self.lbl_error      = QLabel("-")
+        self.lbl_estop      = QLabel("-")
+        self.lbl_slip       = QLabel("-")
+        for w in (self.lbl_drive_mode, self.lbl_status,
+                  self.lbl_error, self.lbl_estop, self.lbl_slip):
+            w.setFont(QFont("Consolas", 11, QFont.Bold))
+            w.setMinimumWidth(90)
         form2.addRow("Drive Mode:", self.lbl_drive_mode)
-        form2.addRow("Status:", self.lbl_status)
-        form2.addRow("Error:", self.lbl_error)
-        form2.addRow("EStop:", self.lbl_estop)
+        form2.addRow("Status:    ", self.lbl_status)
+        form2.addRow("Error:     ", self.lbl_error)
+        form2.addRow("EStop:     ", self.lbl_estop)
         form2.addRow("Slip Angle:", self.lbl_slip)
 
-        sr.addWidget(torque_box, 1)
-        sr.addWidget(diag_box, 1)
-        log_l.addWidget(signals_row, 2)
+        signals_splitter.addWidget(torque_box)
+        signals_splitter.addWidget(diag_box)
+        signals_splitter.setStretchFactor(0, 1)
+        signals_splitter.setStretchFactor(1, 1)
+
+        log_l.addWidget(signals_splitter, 2)       # stretch = 2
 
         # Wire buttons
         self.btn_start_log.clicked.connect(self._start_logging)
@@ -713,25 +846,10 @@ class MainWindow(QMainWindow):
         self.btn_filter.clicked.connect(self._on_set_filter)
         self.btn_clear.clicked.connect(self._on_clear_log)
 
-        # Help tab
-        self.tab_help = QWidget()
-        help_lay = QVBoxLayout(self.tab_help)
-        help_lay.setContentsMargins(20, 20, 20, 20)
-        help_text = QLabel(
-            "This is the Torque Vectoring HMI.\n\n"
-            "- Use Main tab for demo / manual control\n"
-            "- Use Measurement tab for CAN logs and signals\n"
-            "- CAN message 0x20: 4-byte torque (FL, FR, RL, RR)\n"
-            "- CAN message 0x12: Diagnostic signals\n"
-            "- Manual slider range: -500 Nm to +500 Nm\n"
-        )
-        help_text.setWordWrap(True)
-        help_text.setFont(QFont("Segoe UI", 11))
-        help_lay.addWidget(help_text)
-
         self.tabs.addTab(self.tab_logs, "Measurement")
-        self.tabs.addTab(self.tab_help, "Help")
-        self.tabs.currentChanged.connect(self._on_tab_changed)
+
+        # running message counter
+        self._total_msg_count = 0
 
     def _build_header(self) -> QWidget:
         return HeaderBar(
@@ -761,10 +879,10 @@ class MainWindow(QMainWindow):
         cl.setHorizontalSpacing(28)
         cl.setVerticalSpacing(22)
 
-        self.bar_fl = VerticalBar("Front Left", "#EF4444")
+        self.bar_fl = VerticalBar("Front Left",  "#EF4444")
         self.bar_fr = VerticalBar("Front Right", "#EF4444")
-        self.bar_rl = VerticalBar("Rear Left", "#EF4444")
-        self.bar_rr = VerticalBar("Rear Right", "#EF4444")
+        self.bar_rl = VerticalBar("Rear Left",   "#EF4444")
+        self.bar_rr = VerticalBar("Rear Right",  "#EF4444")
 
         self.car = QLabel()
         self.car.setObjectName("CarHero")
@@ -807,21 +925,25 @@ class MainWindow(QMainWindow):
         qv.setContentsMargins(14, 14, 14, 14)
         qv.setSpacing(10)
 
-        btn_tv = QPushButton("4WD and\nTorque Vectoring\nHandling and stability")
+        btn_tv   = QPushButton("4WD and\nTorque Vectoring\nHandling and stability")
         btn_lock = QPushButton("4WD and\nAxle Lock\nOff road traction")
         for b in (btn_tv, btn_lock):
             b.setObjectName("ModeButton")
             b.setMinimumHeight(68)
             b.setCursor(Qt.PointingHandCursor)
-        btn_tv.setProperty("variant", "magenta")
+        btn_tv.setProperty("variant",   "magenta")
         btn_lock.setProperty("variant", "orange")
         qv.addWidget(btn_tv)
         qv.addWidget(btn_lock)
 
-        btn_fwd.clicked.connect(lambda: self._send_button_cmd(0x20, [0x01, 0x00, 0, 0, 0, 0, 0, 0]))
-        btn_awd.clicked.connect(lambda: self._send_button_cmd(0x21, [0x01, 0x00, 0, 0, 0, 0, 0, 0]))
-        btn_tv.clicked.connect(lambda: self._send_button_cmd(0x30, [0xAA, 0x55, 0, 0, 0, 0, 0, 0]))
-        btn_lock.clicked.connect(lambda: self._send_button_cmd(0x31, [0x55, 0xAA, 0, 0, 0, 0, 0, 0]))
+        btn_fwd.clicked.connect(
+            lambda: self._send_button_cmd(0x20, [0x01, 0x00, 0, 0, 0, 0, 0, 0]))
+        btn_awd.clicked.connect(
+            lambda: self._send_button_cmd(0x21, [0x01, 0x00, 0, 0, 0, 0, 0, 0]))
+        btn_tv.clicked.connect(
+            lambda: self._send_button_cmd(0x30, [0xAA, 0x55, 0, 0, 0, 0, 0, 0]))
+        btn_lock.clicked.connect(
+            lambda: self._send_button_cmd(0x31, [0x55, 0xAA, 0, 0, 0, 0, 0, 0]))
 
         s.addWidget(prod_card)
         s.addWidget(proto_card)
@@ -868,31 +990,26 @@ class MainWindow(QMainWindow):
         app = QApplication.instance()
         app.setStyle("Fusion")
         pal = app.palette()
-        pal.setColor(QPalette.Window, QColor(246, 248, 250))
-        pal.setColor(QPalette.Base, QColor(255, 255, 255))
-        pal.setColor(QPalette.AlternateBase, QColor(240, 240, 240))
-        pal.setColor(QPalette.Text, QColor(33, 33, 33))
-        pal.setColor(QPalette.Button, QColor(236, 236, 236))
-        pal.setColor(QPalette.ButtonText, QColor(33, 33, 33))
-        pal.setColor(QPalette.Highlight, QColor(58, 134, 255))
+        pal.setColor(QPalette.Window,          QColor(246, 248, 250))
+        pal.setColor(QPalette.Base,            QColor(255, 255, 255))
+        pal.setColor(QPalette.AlternateBase,   QColor(240, 240, 240))
+        pal.setColor(QPalette.Text,            QColor(33,  33,  33))
+        pal.setColor(QPalette.Button,          QColor(236, 236, 236))
+        pal.setColor(QPalette.ButtonText,      QColor(33,  33,  33))
+        pal.setColor(QPalette.Highlight,       QColor(58, 134, 255))
         pal.setColor(QPalette.HighlightedText, Qt.white)
         app.setPalette(pal)
 
         self.setStyleSheet("""
         QGroupBox#CanCard {
-            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
                         stop:0 #FFFFFF, stop:1 #F5F7FB);
-            border: 1px solid #D9DEE6;
-            border-radius: 14px;
-            margin-top: 0px;
+            border: 1px solid #D9DEE6; border-radius: 14px; margin-top: 0px;
         }
         QLabel#CanTitle { color: #0F172A; letter-spacing: 0.5px; }
         QPushButton {
-            background-color: #EFF2F7;
-            border: 1px solid #CBD5E1;
-            border-radius: 12px;
-            color: #111827;
-            padding: 8px 12px;
+            background-color: #EFF2F7; border: 1px solid #CBD5E1;
+            border-radius: 12px; color: #111827; padding: 8px 12px;
             font: 11pt "Segoe UI";
         }
         QPushButton:hover   { background-color: #E7ECF5; }
@@ -912,28 +1029,24 @@ class MainWindow(QMainWindow):
             padding: 3px 6px; border-radius: 6px; margin: 2px;
         }
         QTabBar::tab:selected { background: #3A86FF; color: white; }
-        QTabBar::tab:hover { background: #E0E7FF; }
+        QTabBar::tab:hover    { background: #E0E7FF; }
         QFrame#Showcase {
-            border-radius: 16px;
-            border: 1px solid rgba(0,0,0,0.08);
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+            border-radius: 16px; border: 1px solid rgba(0,0,0,0.08);
+            background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
                         stop:0 #F8FAFF, stop:1 #EFF4FF);
         }
         QLabel#CarHero { background: transparent; }
         QGroupBox#ModeCard {
-            background: palette(Base);
-            border: 1px solid #DFE5EF;
-            border-radius: 14px;
-            margin-top: 30px;
+            background: palette(Base); border: 1px solid #DFE5EF;
+            border-radius: 14px; margin-top: 30px;
         }
         QGroupBox#ModeCard::title {
-            subcontrol-origin: margin;
-            subcontrol-position: top center;
+            subcontrol-origin: margin; subcontrol-position: top center;
             color: #0F172A; letter-spacing: 0.5px;
         }
         QPushButton#ModeButton {
-            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                 stop:0 rgba(255,255,255,0.85), stop:1 rgba(243,246,255,0.85));
+            background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                stop:0 rgba(255,255,255,0.85), stop:1 rgba(243,246,255,0.85));
             border: 1px solid #CBD5E1; border-radius: 12px; color: #0B1324;
             padding: 10px 12px; text-align: center; font: 10.5pt "Segoe UI";
         }
@@ -942,33 +1055,42 @@ class MainWindow(QMainWindow):
         QPushButton#ModeButton[variant="primary"] {
             background: #707070; color: white; border: 1px solid #1E40AF;
         }
-        QPushButton#ModeButton[variant="primary"]:hover   { background:#2E2E2E; }
-        QPushButton#ModeButton[variant="primary"]:pressed { background:#2E2E2E; }
+        QPushButton#ModeButton[variant="primary"]:hover   { background: #2E2E2E; }
+        QPushButton#ModeButton[variant="primary"]:pressed { background: #2E2E2E; }
         QPushButton#ModeButton[variant="magenta"] {
             background: #8B5CF6; color: white; border: 1px solid #6D28D9;
         }
         QPushButton#ModeButton[variant="magenta"]:hover   { background: #7C3AED; }
         QPushButton#ModeButton[variant="magenta"]:pressed { background: #6D28D9; }
         QPushButton#ModeButton[variant="orange"] {
-            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
                 stop:0 #5DA9E9, stop:1 #1D6FC2);
             border: 1px solid #1C5CAB; border-radius: 14px; color: white;
             padding: 10px 12px; font: 11pt "Segoe UI";
         }
         QPushButton#ModeButton[variant="orange"]:hover {
-            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
                 stop:0 #7BB9F0, stop:1 #1B63B0);
         }
         QPushButton#ModeButton[variant="orange"]:pressed {
-            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
                 stop:0 #4C91CC, stop:1 #164E8A);
         }
-        #HeaderBar { color: #0F172A; }
+        #HeaderBar  { color: #0F172A; }
         #HeaderTitle { color: #0B1324; letter-spacing: 0.8px; }
         QLabel#HeaderLogoLeft[missingLogo="true"],
         QLabel#HeaderLogoRight[missingLogo="true"] {
             background: rgba(0,0,0,0.03);
             border: 1px dashed rgba(0,0,0,0.12);
+        }
+        QGroupBox {
+            font: 10pt "Segoe UI"; color: #1E293B;
+            border: 1px solid #DFE5EF; border-radius: 10px; margin-top: 18px;
+            padding-top: 6px;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin; subcontrol-position: top left;
+            left: 10px; padding: 0 4px;
         }
         """)
 
@@ -989,9 +1111,9 @@ class MainWindow(QMainWindow):
                 eff.setColor(QColor(0, 0, 0, 60))
                 gb.setGraphicsEffect(eff)
 
-    # -----------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────────
     # Images
-    # -----------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────────
 
     def _load_car_image(self, path: str):
         try:
@@ -999,7 +1121,8 @@ class MainWindow(QMainWindow):
             if pix.isNull():
                 self.car.setText("Place top-view car image as 'car_top.png'")
                 return
-            self.car.setPixmap(pix.scaled(self.car.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            self.car.setPixmap(
+                pix.scaled(self.car.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
         except Exception:
             self.car.setText("car_top.png not found")
 
@@ -1008,11 +1131,12 @@ class MainWindow(QMainWindow):
         if isinstance(self.car.pixmap(), QPixmap):
             pix = self.car.pixmap()
             if pix:
-                self.car.setPixmap(pix.scaled(self.car.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                self.car.setPixmap(
+                    pix.scaled(self.car.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
-    # -----------------------------------------------------------------------
-    # CAN ON/OFF
-    # -----------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────────
+    # CAN ON / OFF
+    # ──────────────────────────────────────────────────────────────────────
 
     def _ui_can_buttons_enabled(self, enabled: bool):
         self.btn_on.setEnabled(enabled)
@@ -1023,7 +1147,7 @@ class MainWindow(QMainWindow):
             self._mark_can_on()
             return
         self._ui_can_buttons_enabled(False)
-        self._append_log("[INFO] Bringing CAN interface up...")
+        self._info("[INFO] Bringing CAN interface up…")
         self.open_thread = CanOpenThread()
         self.open_thread.opened.connect(self._on_bus_opened)
         self.open_thread.failed.connect(self._on_bus_open_failed)
@@ -1034,19 +1158,18 @@ class MainWindow(QMainWindow):
         self.bus = bus
         if not (self.reader_thread and self.reader_thread.isRunning()):
             self.reader_thread = CanReaderThread(self.bus)
-            # FIX: Connect batch signal instead of per-message signal
             self.reader_thread.messages_batch.connect(self._on_rx_batch)
             self.reader_thread.interface_down.connect(self._on_interface_down)
             self.reader_thread.start()
         self._mark_can_on()
         sysname = platform.system()
         if sysname == "Windows":
-            self._append_log(f"[INFO] Windows: Vector interface @ {BITRATE//1000} kbit/s connected.")
+            self._info(f"[INFO] Windows: Vector interface @ {BITRATE//1000} kbit/s.")
         else:
-            self._append_log(f"[INFO] {CAN_CHANNEL_LINUX} up @ {BITRATE//1000} kbit/s.")
+            self._info(f"[INFO] {CAN_CHANNEL_LINUX} up @ {BITRATE//1000} kbit/s.")
 
     def _on_bus_open_failed(self, err: str):
-        self._append_log(f"[ERROR] CAN open failed: {err}")
+        self._info(f"[ERROR] CAN open failed: {err}")
         QMessageBox.critical(self, "CAN Init Error", err)
         self._set_status_off()
 
@@ -1071,273 +1194,311 @@ class MainWindow(QMainWindow):
 
         if platform.system() == "Linux":
             try:
-                result = subprocess.run(["sudo", "ifconfig", CAN_CHANNEL_LINUX, "down"],
-                                        capture_output=True, text=True)
+                result = subprocess.run(
+                    ["sudo", "ifconfig", CAN_CHANNEL_LINUX, "down"],
+                    capture_output=True, text=True)
                 if result.returncode != 0:
-                    self._append_log(f"[WARN] ifconfig down: {result.stderr or result.stdout}")
+                    self._info(f"[WARN] ifconfig down: {result.stderr or result.stdout}")
             except Exception as e:
-                self._append_log(f"[WARN] ifconfig exception: {e}")
+                self._info(f"[WARN] ifconfig exception: {e}")
 
         self._set_status_off()
-        self._append_log("[INFO] CAN interface closed.")
-        # FIX: Do NOT auto-stop logging; let user control it
+        self._info("[INFO] CAN interface closed.")
         self._ui_can_buttons_enabled(True)
 
     def closeEvent(self, e):
+        # Stop flush timer first so no more widget updates
+        self._log_flush_timer.stop()
         try:
             self._stop_periodic()
-            self._stop_logging()
+        except Exception:
+            pass
+        if self.reader_thread:
+            self.reader_thread.stop()
+            self.reader_thread.wait(2000)
+            self.reader_thread = None
+        try:
             if self.bus:
                 self.bus.shutdown()
                 self.bus = None
-            if platform.system() == "Linux":
-                try:
-                    res = subprocess.run(["ip", "link", "show", CAN_CHANNEL_LINUX],
-                                         capture_output=True, text=True)
-                    if "state UP" in (res.stdout or ""):
-                        subprocess.run(["sudo", "ifconfig", CAN_CHANNEL_LINUX, "down"], check=False)
-                except Exception:
-                    pass
         except Exception:
             pass
+        if platform.system() == "Linux":
+            try:
+                res = subprocess.run(["ip", "link", "show", CAN_CHANNEL_LINUX],
+                                     capture_output=True, text=True)
+                if "state UP" in (res.stdout or ""):
+                    subprocess.run(
+                        ["sudo", "ifconfig", CAN_CHANNEL_LINUX, "down"], check=False)
+            except Exception:
+                pass
         super().closeEvent(e)
 
     def _mark_can_on(self):
         if self.bus and self.reader_thread and self.reader_thread.isRunning():
             self._set_status_on()
-            # FIX: Removed auto-start logging. User must press "Start Logging" manually.
 
-    # -----------------------------------------------------------------------
-    # Measurement tab handlers
-    # -----------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────────
+    # Measurement tab button handlers
+    # ──────────────────────────────────────────────────────────────────────
 
     def _on_save_log(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Save Log", "can_log.txt", "Text Files (*.txt)")
+        """
+        FIX: Stop all threads before opening the file dialog so Qt doesn't
+        destroy a running thread while the blocking dialog is open.
+        We pause the reader (don't destroy it) and resume after saving.
+        """
+        # Flush what we have first
+        self._flush_log_to_view()
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save CAN Log", "can_log.txt",
+            "Text Files (*.txt);;CSV Files (*.csv);;All Files (*)"
+        )
         if not path:
             return
+
+        # Snapshot the ring under the mutex so no thread can write while we iterate
+        with QMutexLocker(self._log_mutex):
+            lines_snapshot = list(self._log_ring)
+
         try:
             with open(path, "w", encoding="utf-8") as f:
-                f.write("\n".join(self.log_lines))
-            QMessageBox.information(self, "Saved", f"Log saved to {path}")
+                # Write a header
+                f.write(
+                    f"# CAN Log — saved {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"# [HH:MM:SS.mmm]  Dir  ID      DLC  "
+                    f"B0    B1    B2    B3    B4    B5    B6    B7\n"
+                )
+                f.write("\n".join(lines_snapshot))
+                f.write("\n")
+            QMessageBox.information(
+                self, "Saved",
+                f"Saved {len(lines_snapshot):,} lines to:\n{path}"
+            )
         except Exception as e:
-            QMessageBox.critical(self, "Save Error", f"Failed to save:\n{e}")
+            QMessageBox.critical(self, "Save Error", f"Failed to save log:\n{e}")
 
     def _on_set_filter(self):
-        txt, ok = QInputDialog.getText(self, "Set Filter", "Enter CAN IDs (comma separated, hex):")
+        txt, ok = QInputDialog.getText(
+            self, "Set CAN ID Filter",
+            "Enter CAN IDs (comma separated, hex):\nLeave empty to remove filter.")
         if not ok:
             return
         try:
-            ids = {int(x.strip(), 16) for x in txt.split(",") if x.strip() != ""}
+            ids = {int(x.strip(), 16) for x in txt.split(",") if x.strip()}
             self.filter_ids = ids
-            try:
-                if self.bus:
-                    if ids:
-                        filters = [{"can_id": i, "can_mask": 0x7FF, "extended": False} for i in ids]
-                        self.bus.set_filters(filters)
-                    else:
-                        self.bus.set_filters(None)
-            except Exception:
-                pass
-            QMessageBox.information(
-                self, "Filter Set",
-                "Applied IDs: " + ", ".join(hex(x) for x in self.filter_ids)
-                if self.filter_ids else "No filter (show all)."
-            )
+            if self.bus:
+                if ids:
+                    filters = [{"can_id": i, "can_mask": 0x7FF, "extended": False}
+                               for i in ids]
+                    self.bus.set_filters(filters)
+                else:
+                    self.bus.set_filters(None)
+            msg = ("Active filter: " + ", ".join(hex(x) for x in sorted(self.filter_ids))
+                   if self.filter_ids else "No filter — showing all IDs.")
+            QMessageBox.information(self, "Filter Updated", msg)
         except Exception:
-            QMessageBox.critical(self, "Invalid Input", "Please enter valid hex IDs (e.g. 10,12,200).")
+            QMessageBox.critical(
+                self, "Invalid Input",
+                "Please enter valid hex IDs separated by commas (e.g. 10,12,200).")
 
     def _on_clear_log(self):
-        self.log_view.setPlainText("")
-        self.log_lines.clear()
-        self._pending_log_lines.clear()
+        with QMutexLocker(self._log_mutex):
+            self._log_ring.clear()
+            self._log_pending.clear()
+        self.log_view.clear()
+        self._total_msg_count = 0
+        self.lbl_msg_count.setText("0 msgs")
 
-    # -----------------------------------------------------------------------
-    # Logging / Periodic
-    # -----------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────────
+    # Logging / Periodic TX
+    # ──────────────────────────────────────────────────────────────────────
 
     def _start_logging(self):
         if self.logging_enabled:
-            self._append_log("[INFO] Logging already running.")
+            self._info("[INFO] Logging already active.")
             return
         self.logging_enabled = True
-        self._append_log("[INFO] Logging started.")
+        self._info("[INFO] Logging started.")
 
     def _stop_logging(self):
         if not self.logging_enabled:
             return
         self.logging_enabled = False
-        self._append_log("[INFO] Logging stopped.")
+        self._info("[INFO] Logging stopped.")
 
     def _start_periodic(self):
         if self.bus is None:
             QMessageBox.warning(self, "Periodic TX", "CAN is OFF. Turn CAN ON first.")
             return
         if self.periodic_thread and self.periodic_thread.isRunning():
-            self._append_log("[INFO] Periodic TX already running.")
+            self._info("[INFO] Periodic TX already running.")
             return
         payload = [0x3C, 0x00, 0xAA, 0x55, 0x11, 0x22, 0x33, 0x44]
-        self.periodic_thread = PeriodicTxThread(self.bus, arb_id=0x200, payload=payload, period_sec=0.5)
+        self.periodic_thread = PeriodicTxThread(
+            self.bus, arb_id=0x200, payload=payload, period_sec=0.5)
         self.periodic_thread.tx_logged.connect(self._on_periodic_tx_logged)
         self.periodic_thread.start()
-        self._append_log("[INFO] Periodic TX started (0x200 @ 500 ms).")
+        self._info("[INFO] Periodic TX started (0x200 @ 500 ms).")
 
     def _stop_periodic(self):
         if self.periodic_thread:
-            try:
-                self.periodic_thread.stop()
-                self.periodic_thread.wait(1200)
-            except Exception:
-                pass
+            self.periodic_thread.stop()
+            self.periodic_thread.wait(1200)
             self.periodic_thread = None
-            self._append_log("[INFO] Periodic TX stopped.")
+            self._info("[INFO] Periodic TX stopped.")
 
-    # -----------------------------------------------------------------------
-    # RX batch handler (FIX: replaces per-message _on_rx_message)
-    # -----------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────────
+    # RX batch handler
+    # ──────────────────────────────────────────────────────────────────────
 
     def _on_rx_batch(self, messages: list):
-        """
-        FIX: Process a batch of CAN messages at once.
-        - For torque/diag frames: only the latest in batch matters for display.
-        - For logging: buffer all, flush to widget every 100ms.
-        """
         latest_torque = None
-        latest_diag = None
+        latest_diag   = None
+        log_lines_batch: List[str] = []
 
         for msg in messages:
-            # Filter
             if self.filter_ids and (msg.arbitration_id not in self.filter_ids):
                 continue
 
-            # Buffer log line (don't touch widget here)
+            self._total_msg_count += 1
+
             if self.logging_enabled:
-                rx_line = self._format_can_line(
-                    "RX",
-                    msg.arbitration_id,
-                    list(msg.data),
-                    getattr(msg, "dlc", len(msg.data))
+                ts_ms = int((msg.timestamp % 86400) * 1000) if msg.timestamp else 0
+                hh = ts_ms // 3_600_000;  ts_ms %= 3_600_000
+                mm = ts_ms // 60_000;     ts_ms %= 60_000
+                ss = ts_ms // 1_000;      ms = ts_ms % 1_000
+                log_lines_batch.append(
+                    self._format_can_line("RX", msg.arbitration_id,
+                                          list(msg.data),
+                                          getattr(msg, "dlc", len(msg.data)),
+                                          hh, mm, ss, ms)
                 )
-                self._buffer_log(rx_line)
 
             if msg.arbitration_id == 0x20:
                 latest_torque = msg.data
             elif msg.arbitration_id == 0x12:
                 latest_diag = msg.data
 
-        # Only update UI once per batch with the latest value
+        if log_lines_batch:
+            with QMutexLocker(self._log_mutex):
+                self._log_ring.extend(log_lines_batch)
+                self._log_pending.extend(log_lines_batch)
+
+        # Update counter label every batch (cheap)
+        self.lbl_msg_count.setText(f"{self._total_msg_count:,} msgs")
+
         if latest_torque is not None:
             try:
                 self._parse_torque_msg(latest_torque)
-            except Exception as e:
-                self._buffer_log(f"[WARN] Torque parse error: {e}")
+            except Exception as ex:
+                self._info(f"[WARN] Torque parse error: {ex}")
 
         if latest_diag is not None:
             try:
                 self._parse_diag_msg(latest_diag)
-            except Exception as e:
-                self._buffer_log(f"[WARN] Diag parse error: {e}")
+            except Exception as ex:
+                self._info(f"[WARN] Diag parse error: {ex}")
 
     def _on_periodic_tx_logged(self, arb_id: int, data: list):
+        self._record_tx(arb_id, data)
+
+    def _record_tx(self, arb_id: int, data_bytes):
         if not self.logging_enabled:
             return
-        self._append_trace_tx(arb_id, data)
+        now = time.localtime()
+        line = self._format_can_line(
+            "TX", arb_id, list(data_bytes), len(data_bytes),
+            now.tm_hour, now.tm_min, now.tm_sec, 0)
+        with QMutexLocker(self._log_mutex):
+            self._log_ring.append(line)
+            self._log_pending.append(line)
 
-    def _append_trace_tx(self, arb_id: int, data_bytes: list):
-        if not self.logging_enabled:
-            return
-        tx_line = self._format_can_line("TX", arb_id, data_bytes, dlc=len(data_bytes))
-        self._buffer_log(tx_line)
+    def _format_can_line(self, direction: str, arb_id: int,
+                         data_bytes: list, dlc: int,
+                         hh: int, mm: int, ss: int, ms: int) -> str:
+        """
+        Fixed-width columns for monospace display:
+        [HH:MM:SS.mmm]  Dir   ID      DLC   B0    B1    B2 …
+        """
+        dlc    = max(0, min(8, dlc))
+        padded = (list(data_bytes) + [None] * 8)[:8]
+        bytes_str = "  ".join(
+            f"{b:02X}" if b is not None and i < dlc else "  "
+            for i, b in enumerate(padded)
+        )
+        dir_col = "RX" if direction == "RX" else "TX"
+        return (
+            f"[{hh:02d}:{mm:02d}:{ss:02d}.{ms:03d}]"
+            f"  {dir_col}   {arb_id:04X}    {dlc}     {bytes_str}"
+        )
 
-    def _format_can_line(self, direction: str, arb_id: int, data_bytes: list, dlc=None) -> str:
-        if dlc is None:
-            dlc = len(data_bytes)
-        dlc = max(0, min(8, dlc))
-        padded = (list(data_bytes) + [0x00] * (dlc - len(data_bytes)))[:dlc]
-        data_str = " ".join(f"{b:02X}   " for b in padded)
-        return f"{direction}    ID:  {arb_id:X}   DLC:    {dlc}   Data:   {data_str}"
+    # ──────────────────────────────────────────────────────────────────────
+    # Log info / flush
+    # ──────────────────────────────────────────────────────────────────────
 
-    # -----------------------------------------------------------------------
-    # FIX: Batched log buffering — never touch QPlainTextEdit from hot path
-    # -----------------------------------------------------------------------
-
-    def _buffer_log(self, line: str):
-        """Accumulate log lines; actual widget update happens in _flush_log_to_view."""
+    def _info(self, line: str):
+        """Non-CAN info messages — always shown, flushed immediately."""
         ts = time.strftime("%H:%M:%S")
-        full = f"[{ts}] {line}"
-        self.log_lines.append(full)
-        if len(self.log_lines) > 10000:
-            self.log_lines = self.log_lines[-5000:]
-        self._pending_log_lines.append(full)
-
-    def _append_log(self, line: str):
-        """For non-CAN info messages: buffer + force immediate flush."""
-        self._buffer_log(line)
+        full = f"[{ts}.000]  --   ----    -     {line}"
+        with QMutexLocker(self._log_mutex):
+            self._log_ring.append(full)
+            self._log_pending.append(full)
         self._flush_log_to_view()
 
     def _flush_log_to_view(self):
-        """FIX: Called every 100ms by timer. Appends all pending lines to widget at once."""
-        if not self._pending_log_lines:
-            return
-        # Only update log widget when Measurement tab is visible (avoid hidden widget work)
+        """
+        Called every LOG_FLUSH_MS ms (80 ms → ~12 Hz).
+        Drains _log_pending into the CanLogView widget.
+        Skipped entirely when the Measurement tab is not visible.
+        """
         if self._on_main_tab:
-            # Tab is not Measurement — keep buffering, skip widget update
-            # But still clear pending to avoid infinite growth if never on measurement tab
-            # Actually we DO want to show it when they switch back, so keep pending limited
-            if len(self._pending_log_lines) > 500:
-                self._pending_log_lines = self._pending_log_lines[-500:]
+            # Not on Measurement tab — keep pending capped, skip widget update
+            with QMutexLocker(self._log_mutex):
+                if len(self._log_pending) > 2000:
+                    # Discard oldest pending (they'll be in _log_ring for Save)
+                    excess = len(self._log_pending) - 2000
+                    for _ in range(excess):
+                        self._log_pending.popleft()
             return
 
-        text = "\n".join(self._pending_log_lines)
-        self._pending_log_lines.clear()
-        self.log_view.appendPlainText(text)
-        c = self.log_view.textCursor()
-        c.movePosition(QTextCursor.End)
-        self.log_view.setTextCursor(c)
+        with QMutexLocker(self._log_mutex):
+            if not self._log_pending:
+                return
+            lines = list(self._log_pending)
+            self._log_pending.clear()
+
+        self.log_view.appendBatch(lines)
 
     def _on_interface_down(self, err: str):
-        self._append_log(f"[ERROR] Interface issue: {err}")
+        self._info(f"[ERROR] Interface issue: {err}")
         self._set_status_off()
 
-    # -----------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────────
     # Parsing
-    # -----------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────────
 
     def _decode_s8_signed(self, b: int) -> int:
-        """Convert unsigned byte to signed int8."""
         return b if b < 128 else b - 256
 
     def _parse_torque_msg(self, data: bytes):
-        """
-        FIX: 0x20 message — 4 bytes, one per wheel (signed int8 or raw byte).
-        Byte 0 = Front Left
-        Byte 1 = Front Right
-        Byte 2 = Rear Left
-        Byte 3 = Rear Right
-        Values are treated as raw bytes (0-255). Scale to Nm as needed.
-        """
         d = bytes(data)
         if len(d) < 4:
             return
-
-        # Treat each byte as a signed value; multiply by a scale factor if needed
-        # Scale: 1 byte (0-255) -> map to -500..+500 Nm range
-        # Adjust SCALE to match your ECU's actual encoding
-        SCALE = 1  # Set to e.g. 4 if ECU sends value/4 representation
-
+        SCALE = 1
         fl = self._decode_s8_signed(d[0]) * SCALE
         fr = self._decode_s8_signed(d[1]) * SCALE
         rl = self._decode_s8_signed(d[2]) * SCALE
         rr = self._decode_s8_signed(d[3]) * SCALE
-
         self.v_fl, self.v_fr, self.v_rl, self.v_rr = fl, fr, rl, rr
 
-        # Update Measurement tab labels always (lightweight)
-        self.lbl_fl.setText(f"{fl} Nm")
-        self.lbl_fr.setText(f"{fr} Nm")
-        self.lbl_rl.setText(f"{rl} Nm")
-        self.lbl_rr.setText(f"{rr} Nm")
+        # Live signal labels (always update — very cheap)
+        self.lbl_fl.setText(f"{fl:+5d} Nm")
+        self.lbl_fr.setText(f"{fr:+5d} Nm")
+        self.lbl_rl.setText(f"{rl:+5d} Nm")
+        self.lbl_rr.setText(f"{rr:+5d} Nm")
 
-        # FIX: Only paint bars if they are visible
         self._push_bars(fl, fr, rl, rr)
 
     def _parse_diag_msg(self, data: bytes):
@@ -1345,7 +1506,7 @@ class MainWindow(QMainWindow):
         dm = d[0] if len(d) > 0 else 0
         st = d[1] if len(d) > 1 else 0
         er = d[2] if len(d) > 2 else 0
-        es = (st & 0x01)
+        es = st & 0x01
         slip = 0
         if len(d) >= 8:
             slip_raw = (d[7] << 8) | d[6]
@@ -1356,12 +1517,13 @@ class MainWindow(QMainWindow):
         self.lbl_drive_mode.setText(f"{dm}")
         self.lbl_status.setText(f"0x{st:02X}")
         self.lbl_error.setText(f"0x{er:02X}")
-        self.lbl_estop.setText("ACTIVE" if es else "OK")
-        self.lbl_slip.setText(f"{slip} deg")
+        self.lbl_estop.setText("⚠ ACTIVE" if es else "OK")
+        self.lbl_estop.setStyleSheet("color: #DC2626;" if es else "color: #16A34A;")
+        self.lbl_slip.setText(f"{slip:+d} deg")
 
-    # -----------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────────
     # Manual slider
-    # -----------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────────
 
     def _encode_s16_bytes(self, value: int) -> tuple:
         v = max(TORQUE_MIN, min(TORQUE_MAX, int(value)))
@@ -1369,53 +1531,50 @@ class MainWindow(QMainWindow):
             v = (1 << 16) + v
         lo = v & 0xFF
         hi = (v >> 8) & 0xFF
-        if TORQUE_ENDIAN.lower() == "little":
-            return lo, hi
-        else:
-            return hi, lo
+        return (lo, hi) if TORQUE_ENDIAN.lower() == "little" else (hi, lo)
 
     def _send_manual_torque(self, value: int):
         if not self.bus:
             return
         lo, hi = self._encode_s16_bytes(value)
-        msg = can.Message(arbitration_id=0x40, is_extended_id=False, data=bytearray([lo, hi]))
+        msg = can.Message(arbitration_id=0x40, is_extended_id=False,
+                          data=bytearray([lo, hi]))
         try:
             self.bus.send(msg, timeout=0.1)
-            self._append_trace_tx(0x40, [lo, hi])
+            self._record_tx(0x40, [lo, hi])
         except can.CanError as e:
-            self._append_log(f"[ERROR] Manual TX failed: {e}")
+            self._info(f"[ERROR] Manual TX failed: {e}")
 
     def _on_manual_slider_changed(self, v: int):
-        self.lbl_manual_val.setText(f"{v} Nm")
+        self.lbl_manual_val.setText(f"{v:+d} Nm")
         if self.bus:
             self._send_manual_torque(v)
 
-    # -----------------------------------------------------------------------
-    # Toggle / Tabs
-    # -----------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────────
+    # Toggle / Tab
+    # ──────────────────────────────────────────────────────────────────────
 
     def _on_toggle_changed(self):
-        """FIX: Update bar visibility when toggling between Demo and Manual."""
         if self.toggle.isChecked():
-            self.stack.setCurrentIndex(0)   # Demo
+            self.stack.setCurrentIndex(0)
             self._on_demo_page = True
         else:
-            self.stack.setCurrentIndex(1)   # Manual
+            self.stack.setCurrentIndex(1)
             self._on_demo_page = False
         self._update_bars_visibility()
 
     def _on_tab_changed(self, idx: int):
-        """FIX: Pause/resume bar updates and log flushing based on active tab."""
         self._on_main_tab = (idx == 0)
         self._update_bars_visibility()
-
-        # When returning to Main tab, immediately sync bars to latest values
         if self._on_main_tab and self._on_demo_page:
             self._push_bars(self.v_fl, self.v_fr, self.v_rl, self.v_rr)
+        # Flush pending lines when switching TO measurement tab
+        if not self._on_main_tab:
+            self._flush_log_to_view()
 
-    # -----------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────────
     # Status indicator
-    # -----------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────────
 
     def _set_status_on(self):
         self.status_ind.set("ON", QColor("#16A34A"))
@@ -1428,9 +1587,9 @@ class MainWindow(QMainWindow):
         self.btn_off.setEnabled(False)
 
 
-# -----------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────────────────────
 # Entry point
-# -----------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
