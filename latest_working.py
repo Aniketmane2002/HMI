@@ -28,7 +28,7 @@ import can
 #         Constants
 # ===========================
 
-BITRATE         = 250000
+BITRATE            = 250000
 CAN_CHANNEL_LINUX  = "can0"
 CAN_IFACE_LINUX    = "socketcan"
 CAN_IFACE_WINDOWS  = "vector"
@@ -38,11 +38,11 @@ TORQUE_MAX = +500
 TORQUE_ENDIAN = "little"
 
 # Log ring-buffer hard cap (lines stored in memory)
-LOG_RING_MAX    = 20_000
+LOG_RING_MAX  = 20_000
 # Max blocks shown in the QPlainTextEdit widget
-LOG_WIDGET_MAX  = 3_000
+LOG_WIDGET_MAX = 3_000
 # How often (ms) the log widget is refreshed from the pending queue
-LOG_FLUSH_MS    = 80
+LOG_FLUSH_MS  = 80
 
 # ===========================
 #       Custom Widgets
@@ -268,11 +268,10 @@ class CanLogView(QPlainTextEdit):
         self._auto_scroll = (val >= vbar.maximum() - 4)
 
     def appendBatch(self, lines: list):
-        """Append multiple lines in a single document operation — much faster than appendPlainText loop."""
+        """Append multiple lines in a single document operation."""
         if not lines:
             return
         text = "\n".join(lines)
-        # Move cursor to end and insert block
         cursor = self.textCursor()
         cursor.movePosition(QTextCursor.End)
         if self.document().blockCount() > 1:
@@ -407,6 +406,7 @@ class HeaderBar(QWidget):
         super().__init__(parent)
         self._title = title
         self.setMinimumHeight(70)
+        self.setMaximumHeight(80)                   # ← prevent header from growing
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setObjectName("HeaderBar")
 
@@ -537,25 +537,24 @@ class MainWindow(QMainWindow):
         self._on_demo_page  = True
         self._bars_visible  = True
 
-        # ── Ring buffer (thread-safe via mutex) ──────────────────────────────
-        # All CAN logging writes here; GUI reads every LOG_FLUSH_MS ms
-        self._log_mutex       = QMutex()
-        self._log_ring:  deque = deque(maxlen=LOG_RING_MAX)   # persisted for Save
-        self._log_pending: deque = deque(maxlen=10_000)        # waiting to be shown
+        # ── Ring buffer (thread-safe via mutex) ──────────────────────────
+        self._log_mutex        = QMutex()
+        self._log_ring: deque  = deque(maxlen=LOG_RING_MAX)
+        self._log_pending: deque = deque(maxlen=10_000)
 
         self._build_ui()
         self._setup_theme()
         self._set_status_off()
 
-        # Flush timer: push pending lines into the visible widget
+        # Flush timer
         self._log_flush_timer = QTimer(self)
         self._log_flush_timer.setInterval(LOG_FLUSH_MS)
         self._log_flush_timer.timeout.connect(self._flush_log_to_view)
         self._log_flush_timer.start()
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
     # Bar visibility helpers
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _update_bars_visibility(self):
         self._bars_visible = self._on_main_tab and self._on_demo_page
@@ -568,9 +567,9 @@ class MainWindow(QMainWindow):
         self.bar_rl.set_value(rl)
         self.bar_rr.set_value(rr)
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
     # CAN TX helper
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _send_button_cmd(self, arb_id: int, data_bytes: list) -> None:
         if not self.bus:
@@ -595,9 +594,9 @@ class MainWindow(QMainWindow):
         except can.CanError as e:
             QMessageBox.critical(self, "CAN TX Error", f"Message NOT sent:\n{e}")
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
     # UI Build
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
         self.setStatusBar(QStatusBar(self))
@@ -607,6 +606,7 @@ class MainWindow(QMainWindow):
 
         # ── Left slim panel ───────────────────────────────────────────────
         left = QWidget()
+        left.setFixedWidth(220)                     # ← never grows/shrinks
         lv = QVBoxLayout(left)
         lv.setContentsMargins(16, 16, 16, 16)
         lv.setSpacing(12)
@@ -663,24 +663,19 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self.tabs)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([220, 1120])
+        splitter.setSizes([220, 1060])
 
-        # Main tab
+        # ── Main tab ──────────────────────────────────────────────────────
         self.tab_main = QWidget()
         main_l = QVBoxLayout(self.tab_main)
         main_l.setContentsMargins(8, 8, 8, 8)
-        main_l.setSpacing(8)
+        main_l.setSpacing(4)
 
-        self.stack = QStackedWidget()
-        self.page_demo   = self._build_demo_page()
-        self.page_manual = self._build_manual_page()
-        self.stack.addWidget(self.page_demo)    # 0 = Demo
-        self.stack.addWidget(self.page_manual)  # 1 = Manual
-        main_l.addWidget(self.stack, 1)
-
+        # Toggle bar FIRST (pinned to top, fixed height — never moves off screen)
         toggle_row = QWidget()
+        toggle_row.setFixedHeight(44)
         tr2 = QHBoxLayout(toggle_row)
-        tr2.setContentsMargins(0, 8, 0, 0)
+        tr2.setContentsMargins(0, 4, 0, 4)
         tr2.setSpacing(12)
         lbl_manual = QLabel("MANUAL OVERRIDE")
         lbl_demo   = QLabel("DEMO MODES")
@@ -694,7 +689,16 @@ class MainWindow(QMainWindow):
         tr2.addWidget(self.toggle)
         tr2.addWidget(lbl_demo)
         tr2.addStretch(1)
-        main_l.addWidget(toggle_row, 0)
+        main_l.addWidget(toggle_row, 0)             # stretch=0 → always visible at top
+
+        # Stack fills remaining space below the toggle row
+        self.stack = QStackedWidget()
+        self.page_demo   = self._build_demo_page()
+        self.page_manual = self._build_manual_page()
+        self.stack.addWidget(self.page_demo)        # 0 = Demo
+        self.stack.addWidget(self.page_manual)      # 1 = Manual
+        main_l.addWidget(self.stack, 1)             # stretch=1
+
         self.tabs.addTab(self.tab_main, "Main")
 
         # Measurement tab
@@ -724,24 +728,24 @@ class MainWindow(QMainWindow):
 
     def _build_measurement_tab(self):
         """
-        Measurement tab layout:
-          ┌──────────────────────────────────────────────┐
-          │  [toolbar buttons]                           │
-          ├──────────────────────────────────────────────┤
-          │                                              │
-          │   CAN Log  (large, ~60 % height)             │
-          │                                              │
-          ├──────────────────────────────────────────────┤
-          │  Torque Signals (0x20)  │  Diagnostics (0x12)│
-          └──────────────────────────────────────────────┘
+        Measurement tab — all sections have fixed/capped heights so nothing
+        ever pushes another widget off-screen regardless of runtime data volume.
+
+        Layout (top to bottom, all stretch=0):
+          [toolbar buttons]             fixed 46 px
+          [column header label]         fixed 24 px
+          [CAN log view]                min 180 px, max 420 px, Fixed policy
+          [torque + diag splitter]      fixed 160 px
+          [stretch spacer]              absorbs leftover space
         """
         self.tab_logs = QWidget()
         log_l = QVBoxLayout(self.tab_logs)
         log_l.setContentsMargins(10, 10, 10, 10)
-        log_l.setSpacing(8)
+        log_l.setSpacing(6)
 
         # ── Toolbar ───────────────────────────────────────────────────────
         btn_row = QWidget()
+        btn_row.setFixedHeight(46)
         br = QHBoxLayout(btn_row)
         br.setContentsMargins(0, 0, 0, 0)
         br.setSpacing(6)
@@ -760,44 +764,42 @@ class MainWindow(QMainWindow):
         for b in (self.btn_start_log, self.btn_stop_log,
                   self.btn_start_periodic, self.btn_stop_periodic,
                   self.btn_save, self.btn_filter, self.btn_clear):
-            b.setMinimumHeight(34)
+            b.setFixedHeight(34)
             b.setCursor(Qt.PointingHandCursor)
             br.addWidget(b)
         br.addStretch(1)
 
-        # stats label
-        self.lbl_msg_count = QLabel("0 msgs")
-        self.lbl_msg_count.setFont(QFont("Consolas", 9))
-        self.lbl_msg_count.setStyleSheet("color: #888; padding: 0 8px;")
-        br.addWidget(self.lbl_msg_count)
+        log_l.addWidget(btn_row, 0)                 # stretch=0
 
-        log_l.addWidget(btn_row)
-
-        # ── Log header label ─────────────────────────────────────────────
+        # ── Column-header label ───────────────────────────────────────────
         hdr = QLabel(
             " [HH:MM:SS.mmm]   Dir   ID      DLC   "
             "B0    B1    B2    B3    B4    B5    B6    B7"
         )
         hdr.setFont(QFont("Consolas", 9, QFont.Bold))
+        hdr.setFixedHeight(24)
         hdr.setStyleSheet(
             "background:#161B22; color:#8B949E; border:1px solid #30363D;"
-            "border-radius:4px; padding:3px 6px;"
+            "border-radius:4px; padding:2px 6px;"
         )
-        log_l.addWidget(hdr)
+        log_l.addWidget(hdr, 0)                     # stretch=0
 
-        # ── Log view (big) ────────────────────────────────────────────────
+        # ── Log view — hard-capped height ────────────────────────────────
         self.log_view = CanLogView()
-        self.log_view.setMinimumHeight(260)
-        log_l.addWidget(self.log_view, 5)          # stretch = 5  → takes most space
+        self.log_view.setMinimumHeight(180)
+        self.log_view.setMaximumHeight(420)         # never grows beyond this
+        self.log_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        log_l.addWidget(self.log_view, 0)           # stretch=0
 
-        # ── Signals row ───────────────────────────────────────────────────
+        # ── Signals row — fixed height ────────────────────────────────────
         signals_splitter = QSplitter(Qt.Horizontal)
+        signals_splitter.setFixedHeight(160)        # immovable
 
         torque_box = QGroupBox("Torque Signals — Rx  0x20")
         torque_box.setFont(QFont("Segoe UI", 10, QFont.Bold))
         form1 = QFormLayout(torque_box)
         form1.setHorizontalSpacing(16)
-        form1.setVerticalSpacing(6)
+        form1.setVerticalSpacing(4)
         self.lbl_fl = QLabel("-")
         self.lbl_fr = QLabel("-")
         self.lbl_rl = QLabel("-")
@@ -814,7 +816,7 @@ class MainWindow(QMainWindow):
         diag_box.setFont(QFont("Segoe UI", 10, QFont.Bold))
         form2 = QFormLayout(diag_box)
         form2.setHorizontalSpacing(16)
-        form2.setVerticalSpacing(6)
+        form2.setVerticalSpacing(4)
         self.lbl_drive_mode = QLabel("-")
         self.lbl_status     = QLabel("-")
         self.lbl_error      = QLabel("-")
@@ -835,7 +837,8 @@ class MainWindow(QMainWindow):
         signals_splitter.setStretchFactor(0, 1)
         signals_splitter.setStretchFactor(1, 1)
 
-        log_l.addWidget(signals_splitter, 2)       # stretch = 2
+        log_l.addWidget(signals_splitter, 0)        # stretch=0
+        log_l.addStretch(1)                         # absorbs leftover space
 
         # Wire buttons
         self.btn_start_log.clicked.connect(self._start_logging)
@@ -848,7 +851,7 @@ class MainWindow(QMainWindow):
 
         self.tabs.addTab(self.tab_logs, "Measurement")
 
-        # running message counter
+        # Internal counter (not displayed — removed from UI)
         self._total_msg_count = 0
 
     def _build_header(self) -> QWidget:
@@ -864,7 +867,7 @@ class MainWindow(QMainWindow):
         root = QVBoxLayout(page)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(7)
-        root.addWidget(self._build_header(), 0)
+        root.addWidget(self._build_header(), 0)     # header fixed
 
         content = QWidget()
         h = QHBoxLayout(content)
@@ -1111,9 +1114,9 @@ class MainWindow(QMainWindow):
                 eff.setColor(QColor(0, 0, 0, 60))
                 gb.setGraphicsEffect(eff)
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
     # Images
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _load_car_image(self, path: str):
         try:
@@ -1134,9 +1137,9 @@ class MainWindow(QMainWindow):
                 self.car.setPixmap(
                     pix.scaled(self.car.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
     # CAN ON / OFF
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _ui_can_buttons_enabled(self, enabled: bool):
         self.btn_on.setEnabled(enabled)
@@ -1207,7 +1210,6 @@ class MainWindow(QMainWindow):
         self._ui_can_buttons_enabled(True)
 
     def closeEvent(self, e):
-        # Stop flush timer first so no more widget updates
         self._log_flush_timer.stop()
         try:
             self._stop_periodic()
@@ -1238,33 +1240,47 @@ class MainWindow(QMainWindow):
         if self.bus and self.reader_thread and self.reader_thread.isRunning():
             self._set_status_on()
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
     # Measurement tab button handlers
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _on_save_log(self):
         """
-        FIX: Stop all threads before opening the file dialog so Qt doesn't
-        destroy a running thread while the blocking dialog is open.
-        We pause the reader (don't destroy it) and resume after saving.
+        Save the CAN log to file.
+
+        KEY FIX — uses QFileDialog.DontUseNativeDialog to bypass the system
+        GTK/Qt native file picker on Raspberry Pi / embedded Linux, which
+        triggers the xkbcommon compose-table parsing error:
+            xkbcommon: ERROR: .../Compose: string literal is not a valid UTF-8 string
+            qt.qpa.input.methods: failed to create compose table
+        The Qt-internal dialog has no dependency on the system compose table.
         """
-        # Flush what we have first
+        # Flush any pending lines first
         self._flush_log_to_view()
 
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save CAN Log", "can_log.txt",
-            "Text Files (*.txt);;CSV Files (*.csv);;All Files (*)"
-        )
-        if not path:
-            return
+        dialog = QFileDialog(self, "Save CAN Log", "can_log.txt")
+        dialog.setAcceptMode(QFileDialog.AcceptSave)
+        dialog.setNameFilters([
+            "Text Files (*.txt)",
+            "CSV Files (*.csv)",
+            "All Files (*)"
+        ])
+        dialog.setDefaultSuffix("txt")
+        dialog.setOption(QFileDialog.DontUseNativeDialog, True)  # ← critical fix
 
-        # Snapshot the ring under the mutex so no thread can write while we iterate
+        if dialog.exec() != QFileDialog.Accepted:
+            return
+        selected = dialog.selectedFiles()
+        if not selected:
+            return
+        path = selected[0]
+
+        # Snapshot ring buffer under mutex so writer threads can't interleave
         with QMutexLocker(self._log_mutex):
             lines_snapshot = list(self._log_ring)
 
         try:
             with open(path, "w", encoding="utf-8") as f:
-                # Write a header
                 f.write(
                     f"# CAN Log — saved {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
                     f"# [HH:MM:SS.mmm]  Dir  ID      DLC  "
@@ -1280,11 +1296,17 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Save Error", f"Failed to save log:\n{e}")
 
     def _on_set_filter(self):
-        txt, ok = QInputDialog.getText(
-            self, "Set CAN ID Filter",
+        # QInputDialog also risks the same compose-table issue — use non-native
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle("Set CAN ID Filter")
+        dialog.setLabelText(
             "Enter CAN IDs (comma separated, hex):\nLeave empty to remove filter.")
-        if not ok:
+        dialog.setOption(QInputDialog.UsePlainTextEditForTextInput, False)
+
+        if dialog.exec() != QInputDialog.Accepted:
             return
+        txt = dialog.textValue()
+
         try:
             ids = {int(x.strip(), 16) for x in txt.split(",") if x.strip()}
             self.filter_ids = ids
@@ -1309,11 +1331,10 @@ class MainWindow(QMainWindow):
             self._log_pending.clear()
         self.log_view.clear()
         self._total_msg_count = 0
-        self.lbl_msg_count.setText("0 msgs")
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
     # Logging / Periodic TX
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _start_logging(self):
         if self.logging_enabled:
@@ -1349,9 +1370,9 @@ class MainWindow(QMainWindow):
             self.periodic_thread = None
             self._info("[INFO] Periodic TX stopped.")
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
     # RX batch handler
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _on_rx_batch(self, messages: list):
         latest_torque = None
@@ -1386,9 +1407,6 @@ class MainWindow(QMainWindow):
                 self._log_ring.extend(log_lines_batch)
                 self._log_pending.extend(log_lines_batch)
 
-        # Update counter label every batch (cheap)
-        self.lbl_msg_count.setText(f"{self._total_msg_count:,} msgs")
-
         if latest_torque is not None:
             try:
                 self._parse_torque_msg(latest_torque)
@@ -1418,10 +1436,6 @@ class MainWindow(QMainWindow):
     def _format_can_line(self, direction: str, arb_id: int,
                          data_bytes: list, dlc: int,
                          hh: int, mm: int, ss: int, ms: int) -> str:
-        """
-        Fixed-width columns for monospace display:
-        [HH:MM:SS.mmm]  Dir   ID      DLC   B0    B1    B2 …
-        """
         dlc    = max(0, min(8, dlc))
         padded = (list(data_bytes) + [None] * 8)[:8]
         bytes_str = "  ".join(
@@ -1434,12 +1448,11 @@ class MainWindow(QMainWindow):
             f"  {dir_col}   {arb_id:04X}    {dlc}     {bytes_str}"
         )
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
     # Log info / flush
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _info(self, line: str):
-        """Non-CAN info messages — always shown, flushed immediately."""
         ts = time.strftime("%H:%M:%S")
         full = f"[{ts}.000]  --   ----    -     {line}"
         with QMutexLocker(self._log_mutex):
@@ -1449,15 +1462,13 @@ class MainWindow(QMainWindow):
 
     def _flush_log_to_view(self):
         """
-        Called every LOG_FLUSH_MS ms (80 ms → ~12 Hz).
+        Called every LOG_FLUSH_MS ms (~12 Hz).
         Drains _log_pending into the CanLogView widget.
-        Skipped entirely when the Measurement tab is not visible.
+        Skipped when the Measurement tab is not visible.
         """
         if self._on_main_tab:
-            # Not on Measurement tab — keep pending capped, skip widget update
             with QMutexLocker(self._log_mutex):
                 if len(self._log_pending) > 2000:
-                    # Discard oldest pending (they'll be in _log_ring for Save)
                     excess = len(self._log_pending) - 2000
                     for _ in range(excess):
                         self._log_pending.popleft()
@@ -1475,9 +1486,9 @@ class MainWindow(QMainWindow):
         self._info(f"[ERROR] Interface issue: {err}")
         self._set_status_off()
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
     # Parsing
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _decode_s8_signed(self, b: int) -> int:
         return b if b < 128 else b - 256
@@ -1493,7 +1504,6 @@ class MainWindow(QMainWindow):
         rr = self._decode_s8_signed(d[3]) * SCALE
         self.v_fl, self.v_fr, self.v_rl, self.v_rr = fl, fr, rl, rr
 
-        # Live signal labels (always update — very cheap)
         self.lbl_fl.setText(f"{fl:+5d} Nm")
         self.lbl_fr.setText(f"{fr:+5d} Nm")
         self.lbl_rl.setText(f"{rl:+5d} Nm")
@@ -1521,9 +1531,9 @@ class MainWindow(QMainWindow):
         self.lbl_estop.setStyleSheet("color: #DC2626;" if es else "color: #16A34A;")
         self.lbl_slip.setText(f"{slip:+d} deg")
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
     # Manual slider
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _encode_s16_bytes(self, value: int) -> tuple:
         v = max(TORQUE_MIN, min(TORQUE_MAX, int(value)))
@@ -1550,9 +1560,9 @@ class MainWindow(QMainWindow):
         if self.bus:
             self._send_manual_torque(v)
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
     # Toggle / Tab
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _on_toggle_changed(self):
         if self.toggle.isChecked():
@@ -1568,13 +1578,12 @@ class MainWindow(QMainWindow):
         self._update_bars_visibility()
         if self._on_main_tab and self._on_demo_page:
             self._push_bars(self.v_fl, self.v_fr, self.v_rl, self.v_rr)
-        # Flush pending lines when switching TO measurement tab
         if not self._on_main_tab:
             self._flush_log_to_view()
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
     # Status indicator
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _set_status_on(self):
         self.status_ind.set("ON", QColor("#16A34A"))
@@ -1587,9 +1596,9 @@ class MainWindow(QMainWindow):
         self.btn_off.setEnabled(False)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # Entry point
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
