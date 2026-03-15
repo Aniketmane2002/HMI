@@ -12,14 +12,15 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QColor, QPainter, QFont, QPalette, QPixmap, QPen,
-    QLinearGradient, QTextCursor, QBrush
+    QLinearGradient, QTextCursor, QFontMetrics, QTextCharFormat,
+    QBrush
 )
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QVBoxLayout,
-    QHBoxLayout, QGroupBox, QFormLayout, QPlainTextEdit,
-    QMessageBox, QSplitter, QSizePolicy, QStatusBar, QTabWidget,
+    QHBoxLayout, QGroupBox, QFormLayout, QPlainTextEdit, QFileDialog,
+    QInputDialog, QMessageBox, QSplitter, QSizePolicy, QStatusBar, QTabWidget,
     QSlider, QGridLayout, QStackedWidget, QGraphicsDropShadowEffect, QStyle,
-    QFrame, QScrollBar, QLineEdit, QDialog, QDialogButtonBox
+    QFrame, QScrollBar, QDialog, QDialogButtonBox, QLineEdit
 )
 
 import can
@@ -41,20 +42,20 @@ LOG_RING_MAX   = 50_000
 LOG_WIDGET_MAX = 3_000
 LOG_FLUSH_MS   = 80
 
-# Default save path — change to wherever you want logs on the Pi
+# Directory where logs are saved — no file browser needed
 DEFAULT_LOG_DIR = os.path.expanduser("~")
 
 
 # ===========================
 #   Simple filename dialog
-#   (NO native file browser → zero xkbcommon risk)
+#   NO native file browser → zero xkbcommon risk
 # ===========================
 
 class SimpleFilenameDialog(QDialog):
     """
-    A tiny homegrown dialog that asks only for a filename string.
-    Uses NO native OS file picker, so xkbcommon / compose-table is
-    never touched.  The directory is always DEFAULT_LOG_DIR.
+    Asks only for a filename string via a QLineEdit.
+    Uses NO native OS file-picker, so the xkbcommon compose-table
+    is never loaded and the Raspberry Pi crash cannot occur.
     """
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -69,7 +70,7 @@ class SimpleFilenameDialog(QDialog):
         ts = time.strftime("%Y%m%d_%H%M%S")
         suggested = f"can_log_{ts}.txt"
 
-        info = QLabel(f"Save to folder:  {DEFAULT_LOG_DIR}")
+        info = QLabel(f"Save folder:  {DEFAULT_LOG_DIR}")
         info.setFont(QFont("Segoe UI", 9))
         info.setStyleSheet("color: #555;")
         layout.addWidget(info)
@@ -144,10 +145,18 @@ class VerticalBar(QWidget):
         self._value = 0
         self._color = QColor(color)
         self._label = label_text
-        self.setMinimumSize(80, 200)
-        self.setMaximumSize(120, 9999)
+        self.setMinimumSize(100, 260)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setToolTip(f"{self._label}: 0")
+
+    def setRange(self, vmin: int, vmax: int):
+        self._min_value = int(vmin)
+        self._max_value = int(vmax)
+        self.update()
+
+    def setColor(self, color: str):
+        self._color = QColor(color)
+        self.update()
 
     def set_value(self, v: int):
         v = max(self._min_value, min(self._max_value, int(v)))
@@ -160,12 +169,15 @@ class VerticalBar(QWidget):
         return self._value
 
     def sizeHint(self) -> QSize:
-        return QSize(100, 280)
+        return QSize(100, 320)
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(100, 260)
 
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
-        outer = self.rect().adjusted(20, 12, -20, -46)
+        outer = self.rect().adjusted(25, 16, -25, -56)
 
         p.fillRect(outer, QColor("#F4F4F4"))
         p.setPen(QPen(QColor("#708487"), 1))
@@ -197,11 +209,11 @@ class VerticalBar(QWidget):
                 p.drawRoundedRect(QRect(inner.left(), int(zero_y), inner.width(), h), 4, 4)
 
         p.setPen(QColor("#666"))
-        p.drawLine(outer.left() - 8, int(zero_y), outer.left(), int(zero_y))
+        p.drawLine(outer.left() - 10, int(zero_y), outer.left(), int(zero_y))
 
         p.setPen(QColor("#333"))
-        p.setFont(QFont("Segoe UI", 8, QFont.Medium))
-        p.drawText(self.rect().adjusted(0, 0, 0, -4),
+        p.setFont(QFont("Segoe UI", 9, QFont.Medium))
+        p.drawText(self.rect().adjusted(0, 0, 0, -6),
                    Qt.AlignHCenter | Qt.AlignBottom,
                    f"{self._label}\n{self._value} Nm")
 
@@ -210,7 +222,7 @@ class ToggleSwitch(QPushButton):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setCheckable(True)
-        self.setFixedSize(80, 34)
+        self.setMinimumSize(80, 34)
 
     def sizeHint(self):
         return QSize(80, 34)
@@ -272,9 +284,12 @@ class CanLogView(QPlainTextEdit):
 
         self.setStyleSheet("""
             QPlainTextEdit {
-                background: #0D1117; color: #C9D1D9;
-                border: 1px solid #30363D; border-radius: 6px;
-                padding: 4px 6px; selection-background-color: #264F78;
+                background: #0D1117;
+                color: #C9D1D9;
+                border: 1px solid #30363D;
+                border-radius: 6px;
+                padding: 4px 6px;
+                selection-background-color: #264F78;
             }
             QScrollBar:vertical {
                 background: #161B22; width: 10px; border-radius: 5px;
@@ -293,7 +308,8 @@ class CanLogView(QPlainTextEdit):
         """)
 
         self._auto_scroll = True
-        self.verticalScrollBar().valueChanged.connect(self._on_vbar_changed)
+        vbar = self.verticalScrollBar()
+        vbar.valueChanged.connect(self._on_vbar_changed)
 
     def _on_vbar_changed(self, val: int):
         vbar = self.verticalScrollBar()
@@ -310,7 +326,8 @@ class CanLogView(QPlainTextEdit):
         else:
             cursor.insertText(text)
         if self._auto_scroll:
-            self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
+            vbar = self.verticalScrollBar()
+            vbar.setValue(vbar.maximum())
 
 
 # ===========================
@@ -329,17 +346,20 @@ class CanReaderThread(QThread):
     def run(self):
         batch: list = []
         last_emit = time.monotonic()
+
         while self._running:
             try:
                 msg = self._bus.recv(timeout=0.016)
                 if msg is not None:
                     batch.append(msg)
+
                 now = time.monotonic()
                 if now - last_emit >= 0.016:
                     if batch:
                         self.messages_batch.emit(batch)
                         batch = []
                     last_emit = now
+
             except can.CanOperationError as e:
                 self.interface_down.emit(str(e))
                 time.sleep(0.3)
@@ -428,40 +448,43 @@ class HeaderBar(QWidget):
                  parent=None):
         super().__init__(parent)
         self._title = title
-        # Fixed height — never grows
-        self.setFixedHeight(72)
+        self.setMinimumHeight(70)
+        self.setMaximumHeight(70)          # ← fixed: header never grows
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setObjectName("HeaderBar")
 
         shadow = QGraphicsDropShadowEffect(self)
-        shadow.setOffset(0, 6)
-        shadow.setBlurRadius(20)
+        shadow.setOffset(0, 10)
+        shadow.setBlurRadius(36)
         shadow.setColor(QColor(0, 0, 0, 20))
         self.setGraphicsEffect(shadow)
 
         root = QHBoxLayout(self)
-        root.setContentsMargins(20, 4, 20, 8)
+        root.setContentsMargins(26, 4, 26, 10)
         root.setSpacing(0)
 
         self.leftLogo = QLabel()
         self.leftLogo.setObjectName("HeaderLogoLeft")
         self.leftLogo.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self._set_logo(self.leftLogo, left_logo_path, QSize(180, 56))
+        self.leftLogo.setMinimumSize(160, 64)
+        self._set_logo(self.leftLogo, left_logo_path, QSize(220, 64))
 
         titleWrap = QWidget()
         tl = QVBoxLayout(titleWrap)
         tl.setContentsMargins(0, 0, 0, 0)
-        tl.setSpacing(0)
+        tl.setSpacing(2)
+
         self.titleLbl = QLabel(title)
         self.titleLbl.setObjectName("HeaderTitle")
         self.titleLbl.setAlignment(Qt.AlignCenter)
-        self.titleLbl.setFont(QFont("Segoe UI", 18, QFont.Black))
+        self.titleLbl.setFont(QFont("Segoe UI", 20, QFont.Black))
         tl.addWidget(self.titleLbl)
 
         self.rightLogo = QLabel()
         self.rightLogo.setObjectName("HeaderLogoRight")
         self.rightLogo.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self._set_logo(self.rightLogo, right_logo_path, QSize(180, 56))
+        self.rightLogo.setMinimumSize(160, 64)
+        self._set_logo(self.rightLogo, right_logo_path, QSize(220, 64))
 
         root.addWidget(self.leftLogo, 1)
         root.addWidget(titleWrap, 2)
@@ -471,6 +494,11 @@ class HeaderBar(QWidget):
         self._sheen_timer = QTimer(self)
         self._sheen_timer.timeout.connect(self._tick_sheen)
         self._sheen_timer.start(30)
+
+    def setTitle(self, text: str):
+        self._title = text
+        self.titleLbl.setText(text)
+        self.update()
 
     def _set_logo(self, label: QLabel, path: str, size_hint: QSize):
         try:
@@ -500,17 +528,20 @@ class HeaderBar(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
         r = self.rect().adjusted(1, 1, -1, -1)
-        radius = 10
+        radius = 12
+
         grad = QLinearGradient(r.topLeft(), r.bottomRight())
         grad.setColorAt(0.0, QColor("#F0F5FF"))
         grad.setColorAt(1.0, QColor("#EAF3FF"))
         p.setBrush(grad)
         p.setPen(QColor(0, 0, 0, 22))
         p.drawRoundedRect(r, radius, radius)
+
         glass = QColor(255, 255, 255, 110)
         p.setBrush(glass)
         p.setPen(Qt.NoPen)
         p.drawRoundedRect(r.adjusted(1, 1, -1, -1), radius - 2, radius - 2)
+
         p.setOpacity(0.5)
         sheen_w = 140
         x = self._sheen_x
@@ -531,16 +562,15 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Torque Vectoring HMI")
-        # Fixed window size — nothing can go outside the screen
-        self.setFixedSize(1280, 800)
+        self.resize(1280, 800)
 
         self.bus:             Optional[can.BusABC]       = None
         self.reader_thread:   Optional[CanReaderThread]  = None
         self.periodic_thread: Optional[PeriodicTxThread] = None
         self.open_thread:     Optional[CanOpenThread]    = None
 
-        self.filter_ids:      Set[int] = set()
-        self.logging_enabled: bool     = False
+        self.filter_ids:      Set[int]   = set()
+        self.logging_enabled: bool       = False
 
         self.v_fl = self.v_fr = self.v_rl = self.v_rr = 0
 
@@ -562,13 +592,13 @@ class MainWindow(QMainWindow):
         self._log_flush_timer.start()
 
     # ─────────────────────────────────────────────────────────────────────
-    # Bar helpers
+    # Bar visibility helpers
     # ─────────────────────────────────────────────────────────────────────
 
     def _update_bars_visibility(self):
         self._bars_visible = self._on_main_tab and self._on_demo_page
 
-    def _push_bars(self, fl, fr, rl, rr):
+    def _push_bars(self, fl: int, fr: int, rl: int, rr: int):
         if not self._bars_visible:
             return
         self.bar_fl.set_value(fl)
@@ -583,6 +613,13 @@ class MainWindow(QMainWindow):
     def _send_button_cmd(self, arb_id: int, data_bytes: list) -> None:
         if not self.bus:
             QMessageBox.warning(self, "CAN TX", "CAN is OFF. Turn CAN ON first.")
+            return
+        if not (0 <= arb_id <= 0x7FF):
+            QMessageBox.critical(self, "CAN TX", f"Invalid 11-bit ID: {hex(arb_id)}")
+            return
+        if not (0 <= len(data_bytes) <= 8):
+            QMessageBox.critical(self, "CAN TX",
+                                 f"Payload length must be 0..8, got {len(data_bytes)}")
             return
         try:
             data = bytearray(int(b) & 0xFF for b in data_bytes)
@@ -601,76 +638,110 @@ class MainWindow(QMainWindow):
     # ─────────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
-        # Status bar takes ~22px; content area = 800 - 22 = 778px
         self.setStatusBar(QStatusBar(self))
+        splitter = QSplitter()
+        splitter.setChildrenCollapsible(False)
+        self.setCentralWidget(splitter)
 
-        central = QWidget()
-        self.setCentralWidget(central)
-        root_h = QHBoxLayout(central)
-        root_h.setContentsMargins(0, 0, 0, 0)
-        root_h.setSpacing(0)
-
-        # ── Left panel (fixed 220px wide) ─────────────────────────────────
+        # ── Left slim panel ───────────────────────────────────────────────
         left = QWidget()
-        left.setFixedWidth(220)
         lv = QVBoxLayout(left)
-        lv.setContentsMargins(12, 12, 12, 12)
-        lv.setSpacing(10)
+        lv.setContentsMargins(16, 16, 16, 16)
+        lv.setSpacing(12)
 
         card = QGroupBox()
         card.setObjectName("CanCard")
         cv = QVBoxLayout(card)
-        cv.setContentsMargins(14, 14, 14, 14)
-        cv.setSpacing(12)
+        cv.setContentsMargins(16, 16, 16, 16)
+        cv.setSpacing(14)
 
         title_row = QWidget()
         tr = QHBoxLayout(title_row)
         tr.setContentsMargins(0, 0, 0, 0)
-        tr.setSpacing(6)
+        tr.setSpacing(8)
         title_icon = QLabel()
-        title_icon.setFixedSize(20, 20)
+        title_icon.setFixedSize(22, 22)
         title_icon.setPixmap(
-            self.style().standardIcon(QStyle.SP_ComputerIcon).pixmap(20, 20))
+            self.style().standardIcon(QStyle.SP_ComputerIcon).pixmap(22, 22))
         ltitle = QLabel("CAN STATUS")
-        ltitle.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        ltitle.setFont(QFont("Segoe UI", 12, QFont.Bold))
         ltitle.setObjectName("CanTitle")
         tr.addWidget(title_icon, 0, Qt.AlignVCenter)
         tr.addWidget(ltitle, 1, Qt.AlignVCenter)
+        tr.addStretch(0)
 
         self.status_ind = StatusIndicator("OFF", QColor("#C62828"))
         self.btn_on  = QPushButton(
-            self.style().standardIcon(QStyle.SP_DialogApplyButton), " Turn ON")
+            self.style().standardIcon(QStyle.SP_DialogApplyButton),  " Turn ON")
         self.btn_off = QPushButton(
             self.style().standardIcon(QStyle.SP_DialogCancelButton), " Turn OFF")
         for b in (self.btn_on, self.btn_off):
-            b.setFixedHeight(40)
-            b.setIconSize(QSize(16, 16))
+            b.setMinimumHeight(44)
+            b.setIconSize(QSize(18, 18))
             b.setCursor(Qt.PointingHandCursor)
+            b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btn_on.setProperty("variant", "success")
         self.btn_off.setProperty("variant", "danger")
         self.btn_on.clicked.connect(self.on_can_on)
         self.btn_off.clicked.connect(self.on_can_off)
 
         cv.addWidget(title_row)
+        cv.addSpacing(4)
         cv.addWidget(self.status_ind)
+        cv.addSpacing(8)
         cv.addWidget(self.btn_on)
         cv.addWidget(self.btn_off)
 
         lv.addWidget(card)
         lv.addStretch(1)
-        root_h.addWidget(left)
+        splitter.addWidget(left)
 
-        # ── Right: tab widget fills remaining 1060px ──────────────────────
+        # ── Right tabs ────────────────────────────────────────────────────
         self.tabs = QTabWidget()
-        root_h.addWidget(self.tabs)
+        splitter.addWidget(self.tabs)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([220, 1060])
 
         # ── Main tab ──────────────────────────────────────────────────────
-        self._build_main_tab()
+        self.tab_main = QWidget()
+        main_l = QVBoxLayout(self.tab_main)
+        main_l.setContentsMargins(8, 8, 8, 8)
+        main_l.setSpacing(8)
 
-        # ── Measurement tab ───────────────────────────────────────────────
+        self.stack = QStackedWidget()
+        self.page_demo   = self._build_demo_page()
+        self.page_manual = self._build_manual_page()
+        self.stack.addWidget(self.page_demo)    # 0 = Demo
+        self.stack.addWidget(self.page_manual)  # 1 = Manual
+        main_l.addWidget(self.stack, 1)
+
+        # Toggle row — ORIGINAL position (bottom), with fixed height so it
+        # can never be pushed off-screen
+        toggle_row = QWidget()
+        toggle_row.setFixedHeight(46)           # ← only change: fixed height
+        tr2 = QHBoxLayout(toggle_row)
+        tr2.setContentsMargins(0, 8, 0, 0)
+        tr2.setSpacing(12)
+        lbl_manual = QLabel("MANUAL OVERRIDE")
+        lbl_demo   = QLabel("DEMO MODES")
+        lbl_manual.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        lbl_demo.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        self.toggle = ToggleSwitch()
+        self.toggle.setChecked(True)
+        self.toggle.clicked.connect(self._on_toggle_changed)
+        tr2.addStretch(1)
+        tr2.addWidget(lbl_manual)
+        tr2.addWidget(self.toggle)
+        tr2.addWidget(lbl_demo)
+        tr2.addStretch(1)
+        main_l.addWidget(toggle_row, 0)         # stretch=0: never shrinks/grows
+        self.tabs.addTab(self.tab_main, "Main")
+
+        # Measurement tab
         self._build_measurement_tab()
 
-        # ── Help tab ──────────────────────────────────────────────────────
+        # Help tab
         self.tab_help = QWidget()
         help_lay = QVBoxLayout(self.tab_help)
         help_lay.setContentsMargins(20, 20, 20, 20)
@@ -693,84 +764,37 @@ class MainWindow(QMainWindow):
 
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
-    def _build_main_tab(self):
-        """
-        Main tab layout (heights sum to ≤ 756px usable inside tab widget):
-          ┌──────────────────────────────────────┐
-          │  stack (demo or manual page)  flex   │
-          │                                      │
-          ├──────────────────────────────────────┤
-          │  toggle row                   40 px  │
-          └──────────────────────────────────────┘
-        Toggle row is always at the BOTTOM, fixed 40px, never moves.
-        """
-        self.tab_main = QWidget()
-        main_l = QVBoxLayout(self.tab_main)
-        main_l.setContentsMargins(6, 6, 6, 6)
-        main_l.setSpacing(4)
-
-        # Stack occupies all remaining space
-        self.stack = QStackedWidget()
-        self.page_demo   = self._build_demo_page()
-        self.page_manual = self._build_manual_page()
-        self.stack.addWidget(self.page_demo)    # index 0
-        self.stack.addWidget(self.page_manual)  # index 1
-        main_l.addWidget(self.stack, 1)         # stretch=1 → fills space above toggle
-
-        # Toggle row — always at the bottom, fixed height
-        toggle_row = QWidget()
-        toggle_row.setFixedHeight(40)
-        tr2 = QHBoxLayout(toggle_row)
-        tr2.setContentsMargins(0, 0, 0, 0)
-        tr2.setSpacing(12)
-        lbl_manual = QLabel("MANUAL OVERRIDE")
-        lbl_demo   = QLabel("DEMO MODES")
-        lbl_manual.setFont(QFont("Segoe UI", 10, QFont.Bold))
-        lbl_demo.setFont(QFont("Segoe UI", 10, QFont.Bold))
-        self.toggle = ToggleSwitch()
-        self.toggle.setChecked(True)
-        self.toggle.clicked.connect(self._on_toggle_changed)
-        tr2.addStretch(1)
-        tr2.addWidget(lbl_manual)
-        tr2.addWidget(self.toggle)
-        tr2.addWidget(lbl_demo)
-        tr2.addStretch(1)
-        main_l.addWidget(toggle_row, 0)         # stretch=0 → always visible at bottom
-
-        self.tabs.addTab(self.tab_main, "Main")
-
     def _build_measurement_tab(self):
         """
-        Measurement tab — all heights are fixed so nothing can drift.
-        Total budget inside tab: ~756px
-
-          toolbar         40 px  (fixed)
-          col header      22 px  (fixed)
-          log view       420 px  (fixed)
-          signals row    180 px  (fixed)
-          padding/gaps    ~6 px
-          ─────────────────────
-          total          668 px  ← well within 756px
+        Measurement tab.
+        The only layout rules added vs original:
+          - toolbar:         setFixedHeight(46)
+          - col-header:      setFixedHeight(24)
+          - log_view:        setFixedHeight(380)   ← big but bounded
+          - signals row:     setFixedHeight(168)
+          - everything uses stretch=0 so nothing can push anything else
+          - addStretch(1) at bottom absorbs spare pixels harmlessly
+        Signal boxes and log size are unchanged visually from original.
         """
         self.tab_logs = QWidget()
         log_l = QVBoxLayout(self.tab_logs)
-        log_l.setContentsMargins(8, 8, 8, 8)
-        log_l.setSpacing(4)
+        log_l.setContentsMargins(10, 10, 10, 10)
+        log_l.setSpacing(6)
 
-        # ── Toolbar ── fixed 40px ─────────────────────────────────────────
+        # ── Toolbar ── fixed height ───────────────────────────────────────
         btn_row = QWidget()
-        btn_row.setFixedHeight(40)
+        btn_row.setFixedHeight(46)
         br = QHBoxLayout(btn_row)
         br.setContentsMargins(0, 0, 0, 0)
-        br.setSpacing(5)
+        br.setSpacing(6)
 
-        self.btn_start_log      = QPushButton("▶ Start Log")
-        self.btn_stop_log       = QPushButton("■ Stop Log")
-        self.btn_start_periodic = QPushButton("⟳ Periodic TX")
-        self.btn_stop_periodic  = QPushButton("⊘ Stop TX")
-        self.btn_save           = QPushButton("💾 Save Log")
-        self.btn_filter         = QPushButton("⧖ Filter")
-        self.btn_clear          = QPushButton("🗑 Clear")
+        self.btn_start_log      = QPushButton("▶  Start Logging")
+        self.btn_stop_log       = QPushButton("■  Stop Logging")
+        self.btn_start_periodic = QPushButton("⟳  Start Periodic TX")
+        self.btn_stop_periodic  = QPushButton("⊘  Stop Periodic TX")
+        self.btn_save           = QPushButton("💾  Save Log")
+        self.btn_filter         = QPushButton("⧖  Set Filter")
+        self.btn_clear          = QPushButton("🗑  Clear")
 
         self.btn_start_log.setProperty("variant", "success")
         self.btn_stop_log.setProperty("variant",  "danger")
@@ -778,40 +802,40 @@ class MainWindow(QMainWindow):
         for b in (self.btn_start_log, self.btn_stop_log,
                   self.btn_start_periodic, self.btn_stop_periodic,
                   self.btn_save, self.btn_filter, self.btn_clear):
-            b.setFixedHeight(32)
+            b.setMinimumHeight(34)
             b.setCursor(Qt.PointingHandCursor)
             br.addWidget(b)
         br.addStretch(1)
 
-        log_l.addWidget(btn_row, 0)
+        log_l.addWidget(btn_row, 0)             # stretch=0
 
-        # ── Column header ── fixed 22px ───────────────────────────────────
+        # ── Column header ── fixed height ─────────────────────────────────
         hdr = QLabel(
-            "  [HH:MM:SS.mmm]   Dir   ID      DLC   "
+            " [HH:MM:SS.mmm]   Dir   ID      DLC   "
             "B0    B1    B2    B3    B4    B5    B6    B7"
         )
         hdr.setFont(QFont("Consolas", 9, QFont.Bold))
-        hdr.setFixedHeight(22)
+        hdr.setFixedHeight(24)
         hdr.setStyleSheet(
             "background:#161B22; color:#8B949E; border:1px solid #30363D;"
-            "border-radius:3px; padding:1px 6px;"
+            "border-radius:4px; padding:3px 6px;"
         )
-        log_l.addWidget(hdr, 0)
+        log_l.addWidget(hdr, 0)                 # stretch=0
 
-        # ── Log view ── fixed 420px ───────────────────────────────────────
+        # ── Log view ── fixed height so it never expands ──────────────────
         self.log_view = CanLogView()
-        self.log_view.setFixedHeight(420)       # fixed — never grows, never shrinks
-        log_l.addWidget(self.log_view, 0)
+        self.log_view.setFixedHeight(380)       # ← bounded; scrollbar handles overflow
+        log_l.addWidget(self.log_view, 0)       # stretch=0
 
-        # ── Signals splitter ── fixed 180px ──────────────────────────────
+        # ── Signals row ── fixed height ───────────────────────────────────
         signals_splitter = QSplitter(Qt.Horizontal)
-        signals_splitter.setFixedHeight(180)
+        signals_splitter.setFixedHeight(168)    # ← bounded
 
         torque_box = QGroupBox("Torque Signals — Rx  0x20")
         torque_box.setFont(QFont("Segoe UI", 10, QFont.Bold))
         form1 = QFormLayout(torque_box)
-        form1.setHorizontalSpacing(14)
-        form1.setVerticalSpacing(5)
+        form1.setHorizontalSpacing(16)
+        form1.setVerticalSpacing(6)
         self.lbl_fl = QLabel("-")
         self.lbl_fr = QLabel("-")
         self.lbl_rl = QLabel("-")
@@ -827,8 +851,8 @@ class MainWindow(QMainWindow):
         diag_box = QGroupBox("Diagnostic Signals — Rx  0x12")
         diag_box.setFont(QFont("Segoe UI", 10, QFont.Bold))
         form2 = QFormLayout(diag_box)
-        form2.setHorizontalSpacing(14)
-        form2.setVerticalSpacing(5)
+        form2.setHorizontalSpacing(16)
+        form2.setVerticalSpacing(6)
         self.lbl_drive_mode = QLabel("-")
         self.lbl_status     = QLabel("-")
         self.lbl_error      = QLabel("-")
@@ -849,8 +873,8 @@ class MainWindow(QMainWindow):
         signals_splitter.setStretchFactor(0, 1)
         signals_splitter.setStretchFactor(1, 1)
 
-        log_l.addWidget(signals_splitter, 0)
-        log_l.addStretch(1)                     # absorbs any leftover space safely
+        log_l.addWidget(signals_splitter, 0)    # stretch=0
+        log_l.addStretch(1)                     # absorbs leftover — nothing moves
 
         # Wire buttons
         self.btn_start_log.clicked.connect(self._start_logging)
@@ -865,7 +889,7 @@ class MainWindow(QMainWindow):
 
         self._total_msg_count = 0
 
-    def _build_header(self) -> HeaderBar:
+    def _build_header(self) -> QWidget:
         return HeaderBar(
             title="TORQUE VECTORING",
             left_logo_path="Dana_logo.png",
@@ -877,9 +901,7 @@ class MainWindow(QMainWindow):
         page.setObjectName("DemoPage")
         root = QVBoxLayout(page)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(4)
-
-        # Header fixed 72px
+        root.setSpacing(7)
         root.addWidget(self._build_header(), 0)
 
         content = QWidget()
@@ -889,10 +911,11 @@ class MainWindow(QMainWindow):
 
         canvas = QFrame()
         canvas.setObjectName("Showcase")
+        canvas.setMinimumHeight(0)
         cl = QGridLayout(canvas)
-        cl.setContentsMargins(16, 16, 16, 16)
-        cl.setHorizontalSpacing(20)
-        cl.setVerticalSpacing(16)
+        cl.setContentsMargins(24, 24, 24, 24)
+        cl.setHorizontalSpacing(28)
+        cl.setVerticalSpacing(22)
 
         self.bar_fl = VerticalBar("Front Left",  "#EF4444")
         self.bar_fr = VerticalBar("Front Right", "#EF4444")
@@ -902,7 +925,7 @@ class MainWindow(QMainWindow):
         self.car = QLabel()
         self.car.setObjectName("CarHero")
         self.car.setAlignment(Qt.AlignCenter)
-        self.car.setMinimumSize(300, 400)
+        self.car.setMinimumSize(460, 520)
         self._load_car_image("car_top.png")
 
         cl.addWidget(self.bar_fl, 0, 0, Qt.AlignRight | Qt.AlignVCenter)
@@ -912,40 +935,39 @@ class MainWindow(QMainWindow):
         cl.addWidget(self.bar_rr, 2, 2, Qt.AlignLeft  | Qt.AlignVCenter)
 
         sidebar = QWidget()
-        sidebar.setFixedWidth(260)
         s = QVBoxLayout(sidebar)
-        s.setContentsMargins(12, 8, 12, 8)
-        s.setSpacing(10)
+        s.setContentsMargins(16, 16, 16, 16)
+        s.setSpacing(14)
 
         prod_card = QGroupBox("PRODUCTION")
-        prod_card.setFont(QFont("Segoe UI", 13, QFont.Bold))
+        prod_card.setFont(QFont("Segoe UI", 16, QFont.Bold))
         prod_card.setObjectName("ModeCard")
         pv = QVBoxLayout(prod_card)
-        pv.setContentsMargins(10, 10, 10, 10)
-        pv.setSpacing(8)
+        pv.setContentsMargins(14, 14, 14, 14)
+        pv.setSpacing(10)
 
         btn_fwd = QPushButton("FWD\nFront wheel drive")
         btn_awd = QPushButton("AWD\nAll wheel drive")
         for b in (btn_fwd, btn_awd):
             b.setObjectName("ModeButton")
-            b.setFixedHeight(54)
+            b.setMinimumHeight(60)
             b.setCursor(Qt.PointingHandCursor)
             b.setProperty("variant", "primary")
         pv.addWidget(btn_fwd)
         pv.addWidget(btn_awd)
 
         proto_card = QGroupBox("PROTOTYPE")
-        proto_card.setFont(QFont("Segoe UI", 13, QFont.Bold))
+        proto_card.setFont(QFont("Segoe UI", 16, QFont.Bold))
         proto_card.setObjectName("ModeCard")
         qv = QVBoxLayout(proto_card)
-        qv.setContentsMargins(10, 10, 10, 10)
-        qv.setSpacing(8)
+        qv.setContentsMargins(14, 14, 14, 14)
+        qv.setSpacing(10)
 
         btn_tv   = QPushButton("4WD and\nTorque Vectoring\nHandling and stability")
         btn_lock = QPushButton("4WD and\nAxle Lock\nOff road traction")
         for b in (btn_tv, btn_lock):
             b.setObjectName("ModeButton")
-            b.setFixedHeight(60)
+            b.setMinimumHeight(68)
             b.setCursor(Qt.PointingHandCursor)
         btn_tv.setProperty("variant",   "magenta")
         btn_lock.setProperty("variant", "orange")
@@ -965,20 +987,20 @@ class MainWindow(QMainWindow):
         s.addWidget(proto_card)
         s.addStretch(1)
 
-        h.addWidget(canvas, 1)
-        h.addWidget(sidebar, 0)
+        h.addWidget(canvas, 3)
+        h.addWidget(sidebar, 2)
         root.addWidget(content, 1)
         return page
 
     def _build_manual_page(self) -> QWidget:
         page = QWidget()
         lay = QVBoxLayout(page)
-        lay.setContentsMargins(24, 16, 24, 16)
-        lay.setSpacing(10)
+        lay.setContentsMargins(24, 24, 24, 24)
+        lay.setSpacing(12)
         lay.addWidget(self._build_header(), 0)
 
         title = QLabel("MANUAL OVERRIDE")
-        title.setFont(QFont("Segoe UI", 15, QFont.Bold))
+        title.setFont(QFont("Segoe UI", 16, QFont.Bold))
         title.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
 
         self.manual_slider = BigSlider()
@@ -995,16 +1017,12 @@ class MainWindow(QMainWindow):
         self.lbl_manual_val.setAlignment(Qt.AlignHCenter)
 
         lay.addWidget(title)
-        lay.addSpacing(60)
+        lay.addSpacing(100)
         lay.addWidget(self.manual_slider)
         lay.addWidget(lr)
         lay.addWidget(self.lbl_manual_val)
         lay.addStretch(1)
         return page
-
-    # ─────────────────────────────────────────────────────────────────────
-    # Theme
-    # ─────────────────────────────────────────────────────────────────────
 
     def _setup_theme(self):
         app = QApplication.instance()
@@ -1024,13 +1042,13 @@ class MainWindow(QMainWindow):
         QGroupBox#CanCard {
             background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
                         stop:0 #FFFFFF, stop:1 #F5F7FB);
-            border: 1px solid #D9DEE6; border-radius: 12px; margin-top: 0px;
+            border: 1px solid #D9DEE6; border-radius: 14px; margin-top: 0px;
         }
         QLabel#CanTitle { color: #0F172A; letter-spacing: 0.5px; }
         QPushButton {
             background-color: #EFF2F7; border: 1px solid #CBD5E1;
-            border-radius: 10px; color: #111827; padding: 6px 10px;
-            font: 10pt "Segoe UI";
+            border-radius: 12px; color: #111827; padding: 8px 12px;
+            font: 11pt "Segoe UI";
         }
         QPushButton:hover   { background-color: #E7ECF5; }
         QPushButton:pressed { background-color: #DEE5F0; }
@@ -1045,20 +1063,20 @@ class MainWindow(QMainWindow):
         QPushButton[variant="danger"]:hover   { background: #C22424; }
         QPushButton[variant="danger"]:pressed { background: #AE2121; }
         QTabBar::tab {
-            background: #F3F4F6; color: #333; font: 10pt "Segoe UI";
-            padding: 4px 10px; border-radius: 6px; margin: 2px;
+            background: #F3F4F6; color: #333; font: 11pt "Segoe UI";
+            padding: 3px 6px; border-radius: 6px; margin: 2px;
         }
         QTabBar::tab:selected { background: #3A86FF; color: white; }
         QTabBar::tab:hover    { background: #E0E7FF; }
         QFrame#Showcase {
-            border-radius: 14px; border: 1px solid rgba(0,0,0,0.08);
+            border-radius: 16px; border: 1px solid rgba(0,0,0,0.08);
             background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
                         stop:0 #F8FAFF, stop:1 #EFF4FF);
         }
         QLabel#CarHero { background: transparent; }
         QGroupBox#ModeCard {
             background: palette(Base); border: 1px solid #DFE5EF;
-            border-radius: 12px; margin-top: 26px;
+            border-radius: 14px; margin-top: 30px;
         }
         QGroupBox#ModeCard::title {
             subcontrol-origin: margin; subcontrol-position: top center;
@@ -1067,13 +1085,13 @@ class MainWindow(QMainWindow):
         QPushButton#ModeButton {
             background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
                 stop:0 rgba(255,255,255,0.85), stop:1 rgba(243,246,255,0.85));
-            border: 1px solid #CBD5E1; border-radius: 10px; color: #0B1324;
-            padding: 8px 10px; text-align: center; font: 10pt "Segoe UI";
+            border: 1px solid #CBD5E1; border-radius: 12px; color: #0B1324;
+            padding: 10px 12px; text-align: center; font: 10.5pt "Segoe UI";
         }
         QPushButton#ModeButton:hover   { background: rgba(240,243,255,0.95); }
         QPushButton#ModeButton:pressed { background: rgba(232,237,255,1.00); }
         QPushButton#ModeButton[variant="primary"] {
-            background: #707070; color: white; border: 1px solid #555;
+            background: #707070; color: white; border: 1px solid #1E40AF;
         }
         QPushButton#ModeButton[variant="primary"]:hover   { background: #2E2E2E; }
         QPushButton#ModeButton[variant="primary"]:pressed { background: #2E2E2E; }
@@ -1085,8 +1103,8 @@ class MainWindow(QMainWindow):
         QPushButton#ModeButton[variant="orange"] {
             background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
                 stop:0 #5DA9E9, stop:1 #1D6FC2);
-            border: 1px solid #1C5CAB; border-radius: 12px; color: white;
-            padding: 8px 10px; font: 10pt "Segoe UI";
+            border: 1px solid #1C5CAB; border-radius: 14px; color: white;
+            padding: 10px 12px; font: 11pt "Segoe UI";
         }
         QPushButton#ModeButton[variant="orange"]:hover {
             background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
@@ -1096,7 +1114,7 @@ class MainWindow(QMainWindow):
             background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
                 stop:0 #4C91CC, stop:1 #164E8A);
         }
-        #HeaderBar   { color: #0F172A; }
+        #HeaderBar  { color: #0F172A; }
         #HeaderTitle { color: #0B1324; letter-spacing: 0.8px; }
         QLabel#HeaderLogoLeft[missingLogo="true"],
         QLabel#HeaderLogoRight[missingLogo="true"] {
@@ -1105,8 +1123,8 @@ class MainWindow(QMainWindow):
         }
         QGroupBox {
             font: 10pt "Segoe UI"; color: #1E293B;
-            border: 1px solid #DFE5EF; border-radius: 8px; margin-top: 16px;
-            padding-top: 4px;
+            border: 1px solid #DFE5EF; border-radius: 10px; margin-top: 18px;
+            padding-top: 6px;
         }
         QGroupBox::title {
             subcontrol-origin: margin; subcontrol-position: top left;
@@ -1114,7 +1132,7 @@ class MainWindow(QMainWindow):
         }
         """)
 
-        def _soft_shadow(widget, blur=20, alpha=55, dy=6):
+        def _soft_shadow(widget, blur=26, alpha=70, dy=8):
             eff = QGraphicsDropShadowEffect(widget)
             eff.setOffset(0, dy)
             eff.setBlurRadius(blur)
@@ -1123,9 +1141,13 @@ class MainWindow(QMainWindow):
 
         for gb in self.findChildren(QGroupBox):
             if gb.objectName() == "ModeCard":
-                _soft_shadow(gb, blur=18, alpha=55, dy=6)
+                _soft_shadow(gb, blur=22, alpha=60, dy=8)
             if gb.objectName() == "CanCard":
-                _soft_shadow(gb, blur=20, alpha=55, dy=6)
+                eff = QGraphicsDropShadowEffect(gb)
+                eff.setOffset(0, 6)
+                eff.setBlurRadius(24)
+                eff.setColor(QColor(0, 0, 0, 60))
+                gb.setGraphicsEffect(eff)
 
     # ─────────────────────────────────────────────────────────────────────
     # Images
@@ -1138,18 +1160,17 @@ class MainWindow(QMainWindow):
                 self.car.setText("Place top-view car image as 'car_top.png'")
                 return
             self.car.setPixmap(
-                pix.scaled(self.car.minimumSize(), Qt.KeepAspectRatio,
-                           Qt.SmoothTransformation))
+                pix.scaled(self.car.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
         except Exception:
             self.car.setText("car_top.png not found")
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        pix = self.car.pixmap()
-        if pix and not pix.isNull():
-            self.car.setPixmap(
-                pix.scaled(self.car.size(), Qt.KeepAspectRatio,
-                           Qt.SmoothTransformation))
+        if isinstance(self.car.pixmap(), QPixmap):
+            pix = self.car.pixmap()
+            if pix:
+                self.car.setPixmap(
+                    pix.scaled(self.car.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
     # ─────────────────────────────────────────────────────────────────────
     # CAN ON / OFF
@@ -1212,8 +1233,8 @@ class MainWindow(QMainWindow):
                     capture_output=True, text=True)
                 if result.returncode != 0:
                     self._info(f"[WARN] ifconfig down: {result.stderr or result.stdout}")
-            except Exception as ex:
-                self._info(f"[WARN] ifconfig exception: {ex}")
+            except Exception as e:
+                self._info(f"[WARN] ifconfig exception: {e}")
         self._set_status_off()
         self._info("[INFO] CAN interface closed.")
         self._ui_can_buttons_enabled(True)
@@ -1250,21 +1271,14 @@ class MainWindow(QMainWindow):
             self._set_status_on()
 
     # ─────────────────────────────────────────────────────────────────────
-    # Save log  ← completely rewritten, zero Qt file dialog
+    # Save log — zero Qt file dialog, zero xkbcommon risk
     # ─────────────────────────────────────────────────────────────────────
 
     def _on_save_log(self):
         """
-        Save CAN log using a simple home-grown dialog (QLineEdit only).
-        This avoids ALL native OS file-picker code paths and therefore
-        never triggers the xkbcommon / compose-table crash on Raspberry Pi.
-
-        Flow:
-          1. Flush any pending display lines.
-          2. Ask user for a filename via SimpleFilenameDialog.
-          3. Snapshot the ring buffer under the mutex.
-          4. Write with plain Python open() — no Qt file I/O involved.
-          5. Show result in a plain QMessageBox (safe — no file browser).
+        Uses SimpleFilenameDialog (plain QLineEdit, no native file browser).
+        This is the only guaranteed way to avoid the xkbcommon compose-table
+        crash on Raspberry Pi / embedded Linux.
         """
         self._flush_log_to_view()
 
@@ -1274,7 +1288,6 @@ class MainWindow(QMainWindow):
 
         path = dlg.get_path()
 
-        # Snapshot under mutex
         with QMutexLocker(self._log_mutex):
             lines_snapshot = list(self._log_ring)
 
@@ -1303,10 +1316,10 @@ class MainWindow(QMainWindow):
     # ─────────────────────────────────────────────────────────────────────
 
     def _on_set_filter(self):
-        """Plain homegrown dialog — no native picker, no xkbcommon risk."""
+        """Plain QDialog with QLineEdit — no native picker, no xkbcommon."""
         dlg = QDialog(self)
         dlg.setWindowTitle("Set CAN ID Filter")
-        dlg.setFixedSize(400, 130)
+        dlg.setFixedSize(420, 130)
         dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         lay = QVBoxLayout(dlg)
         lay.setContentsMargins(16, 14, 16, 14)
@@ -1426,8 +1439,8 @@ class MainWindow(QMainWindow):
 
         if log_lines_batch:
             with QMutexLocker(self._log_mutex):
-                self._log_ring.extend(log_lines_batch)   # always saved
-                self._log_pending.extend(log_lines_batch) # for display
+                self._log_ring.extend(log_lines_batch)
+                self._log_pending.extend(log_lines_batch)
 
         if latest_torque is not None:
             try:
