@@ -178,7 +178,22 @@ class VerticalBar(QWidget):
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
-        outer = self.rect().adjusted(18, 12, -18, -50)
+
+        W = self.width()
+        H = self.height()
+
+        # Fixed pixel budget at the bottom — each text gets its own row,
+        # they NEVER overlap regardless of widget height.
+        #   bottom 16px → value text  (e.g. "-75 Nm")
+        #   next   18px → label text  (e.g. "FL")
+        #   4px gap between label and bar bottom
+        LABEL_H = 18
+        VALUE_H = 16
+        GAP     = 4
+        BOTTOM_RESERVED = LABEL_H + VALUE_H + GAP   # = 38 px
+
+        # Bar track fills everything above the reserved area
+        outer = QRect(18, 10, W - 36, H - BOTTOM_RESERVED - 10)
 
         # Dark track background
         p.fillRect(outer, QColor("#0D1520"))
@@ -210,10 +225,11 @@ class VerticalBar(QWidget):
                 grad.setColorAt(1.0, QColor("#0077B6"))
                 p.setBrush(grad)
                 p.drawRoundedRect(bar_rect, 4, 4)
-                # Glow tip
+                # Glow tip at top
                 tip = QRect(inner.left(), top, inner.width(), min(6, h))
                 p.setBrush(QColor(0, 229, 255, 180))
                 p.drawRoundedRect(tip, 3, 3)
+
         elif v < 0.0 and vmin < 0.0:
             frac = min(1.0, abs(v) / abs(vmin))
             h = int(half_h * frac)
@@ -229,18 +245,21 @@ class VerticalBar(QWidget):
         p.setPen(QColor("#3A5A7A"))
         p.drawLine(outer.left() - 6, int(zero_y), outer.left(), int(zero_y))
 
-        # Label
+        # ── Label row (e.g. "FL") ─────────────────────────────────────────
+        # Sits in the pixel band immediately below the bar track
+        label_rect = QRect(0, H - BOTTOM_RESERVED, W, LABEL_H)
         p.setPen(QColor("#00BCD4"))
         p.setFont(QFont("Segoe UI", 8, QFont.Bold))
-        p.drawText(self.rect().adjusted(0, 0, 0, -28),
-                   Qt.AlignHCenter | Qt.AlignBottom, self._label)
+        p.drawText(label_rect, Qt.AlignHCenter | Qt.AlignVCenter, self._label)
 
-        # Value
+        # ── Value row (e.g. "-75 Nm") ─────────────────────────────────────
+        # Sits in the very bottom pixel band, completely separate from label
+        val_rect = QRect(0, H - VALUE_H, W, VALUE_H)
         val_color = QColor("#00E5FF") if self._value >= 0 else QColor("#FF6B35")
         p.setPen(val_color)
-        p.setFont(QFont("Segoe UI", 9, QFont.Bold))
-        p.drawText(self.rect().adjusted(0, 0, 0, -6),
-                   Qt.AlignHCenter | Qt.AlignBottom, f"{self._value} Nm")
+        p.setFont(QFont("Segoe UI", 8, QFont.Bold))
+        p.drawText(val_rect, Qt.AlignHCenter | Qt.AlignVCenter,
+                   f"{self._value} Nm")
 
 
 class ToggleSwitch(QPushButton):
