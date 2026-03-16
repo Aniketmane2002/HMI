@@ -33,8 +33,8 @@ CAN_CHANNEL_LINUX  = "can0"
 CAN_IFACE_LINUX    = "socketcan"
 CAN_IFACE_WINDOWS  = "vector"
 
-TORQUE_MIN    = -500
-TORQUE_MAX    = +500
+TORQUE_MIN    = -200
+TORQUE_MAX    = +200
 TORQUE_ENDIAN = "little"
 
 LOG_RING_MAX   = 50_000
@@ -155,7 +155,7 @@ class VerticalBar(QWidget):
         self._color     = QColor(color)
         self._label     = label_text
         # Larger minimum size for better visibility
-        self.setMinimumSize(80, 280)
+        self.setMinimumSize(100, 280)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setToolTip(f"{self._label}: 0")
 
@@ -170,10 +170,10 @@ class VerticalBar(QWidget):
         return self._value
 
     def sizeHint(self) -> QSize:
-        return QSize(90, 340)
+        return QSize(100, 320)
 
     def minimumSizeHint(self) -> QSize:
-        return QSize(80, 280)
+        return QSize(100, 260)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -187,9 +187,9 @@ class VerticalBar(QWidget):
         #   bottom 16px → value text  (e.g. "-75 Nm")
         #   next   18px → label text  (e.g. "FL")
         #   4px gap between label and bar bottom
-        LABEL_H = 18
-        VALUE_H = 16
-        GAP     = 4
+        LABEL_H = 28
+        VALUE_H = 26
+        GAP     = 14
         BOTTOM_RESERVED = LABEL_H + VALUE_H + GAP   # = 38 px
 
         # Bar track fills everything above the reserved area
@@ -236,8 +236,8 @@ class VerticalBar(QWidget):
             if h > 0:
                 bar_rect = QRect(inner.left(), int(zero_y), inner.width(), h)
                 grad = QLinearGradient(bar_rect.topLeft(), bar_rect.bottomLeft())
-                grad.setColorAt(0.0, QColor("#FF6B35"))
-                grad.setColorAt(1.0, QColor("#CC3300"))
+                grad.setColorAt(0.0, QColor("#f20d0d"))
+                grad.setColorAt(1.0, QColor("#d00d0d"))
                 p.setBrush(grad)
                 p.drawRoundedRect(bar_rect, 4, 4)
 
@@ -247,20 +247,12 @@ class VerticalBar(QWidget):
 
         # ── Label row (e.g. "FL") ─────────────────────────────────────────
         # Sits in the pixel band immediately below the bar track
-        label_rect = QRect(0, H - BOTTOM_RESERVED, W, LABEL_H)
-        p.setPen(QColor("#00BCD4"))
+        label_rect = QRect(0, H - BOTTOM_RESERVED+8, W, LABEL_H)
+        p.setPen(QColor("#f4e1e1"))
         p.setFont(QFont("Segoe UI", 8, QFont.Bold))
-        p.drawText(label_rect, Qt.AlignHCenter | Qt.AlignVCenter, self._label)
+        p.drawText(label_rect, Qt.AlignHCenter | Qt.AlignVCenter, f"{self._label}\n{self._value} Nm")
 
-        # ── Value row (e.g. "-75 Nm") ─────────────────────────────────────
-        # Sits in the very bottom pixel band, completely separate from label
-        val_rect = QRect(0, H - VALUE_H, W, VALUE_H)
-        val_color = QColor("#00E5FF") if self._value >= 0 else QColor("#FF6B35")
-        p.setPen(val_color)
-        p.setFont(QFont("Segoe UI", 8, QFont.Bold))
-        p.drawText(val_rect, Qt.AlignHCenter | Qt.AlignVCenter,
-                   f"{self._value} Nm")
-
+        
 
 class ToggleSwitch(QPushButton):
     def __init__(self, parent=None):
@@ -582,7 +574,7 @@ class CarDisplayWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         # Larger minimum size
-        self.setMinimumSize(420, 520)
+        self.setMinimumSize(460, 520)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._fl = self._fr = self._rl = self._rr = 0
 
@@ -1039,9 +1031,9 @@ class MainWindow(QMainWindow):
         canvas = QFrame()
         canvas.setObjectName("Showcase")
         cl = QGridLayout(canvas)
-        cl.setContentsMargins(12, 12, 12, 12)
-        cl.setHorizontalSpacing(10)
-        cl.setVerticalSpacing(8)
+        cl.setContentsMargins(24, 24, 24, 24)
+        cl.setHorizontalSpacing(28)
+        cl.setVerticalSpacing(22)
 
         self.bar_fl = VerticalBar("FL", "#00BCD4")
         self.bar_fr = VerticalBar("FR", "#00BCD4")
@@ -1056,10 +1048,10 @@ class MainWindow(QMainWindow):
         cl.addWidget(self.bar_rl, 2, 0, Qt.AlignRight | Qt.AlignVCenter)
         cl.addWidget(self.bar_rr, 2, 2, Qt.AlignLeft  | Qt.AlignVCenter)
         cl.setRowStretch(0, 1)
-        cl.setRowStretch(1, 0)
-        cl.setRowStretch(2, 1)
-        cl.setRowStretch(3, 0)
-        cl.setColumnStretch(1, 1)
+        #cl.setRowStretch(1, 0)
+        #cl.setRowStretch(2, 1)
+        #cl.setRowStretch(3, 0)
+        #cl.setColumnStretch(1, 1)
 
         # ── Sidebar: mode buttons ─────────────────────────────────────────
         sidebar = QWidget()
@@ -1128,8 +1120,8 @@ class MainWindow(QMainWindow):
         # Lock button: amber/gold — off-road, rugged feel
         btn_lock = self._make_mode_btn(
             "LOCK", "4WD + Axle Lock\nOff-Road Traction",
-            top="#92400E", bot="#451A03",
-            border="#D97706", hover="#D97706")
+            top="#1B4D8E", bot="#0F2F5A",
+            border="#2563EB", hover="#2563EB")
 
         qv.addWidget(btn_tv)
         qv.addWidget(btn_lock)
