@@ -4,28 +4,13 @@ import can
 
 CHANNEL  = 0
 BITRATE  = 250000
-CAN_ID   = 0x20
+CAN_ID   = 0x10
 
-# -----------------------------------------------------------------------
-# Signed byte (int8) limits — the max range a single CAN byte can carry
-# when interpreted as two's-complement signed 8-bit integer:
-#
-#   Bit pattern  Unsigned  Signed
-#   0x00         0         0       <- zero
-#   0x01         1        +1
-#   ...
-#   0x7F         127      +127     <- MAX POSITIVE (int8 ceiling)
-#   0x80         128      -128     <- MAX NEGATIVE (int8 floor)
-#   0x81         129      -127
-#   ...
-#   0xFF         255       -1
-#
-# So:  MIN_NM = -128,  MAX_NM = +127
-# -----------------------------------------------------------------------
+
 MIN_NM = -128          # int8 minimum  (0x80)
 MAX_NM = +127          # int8 maximum  (0x7F)
-STEP   = 1             # 1 Nm step fits neatly in the 255-count range
-PERIOD_S = 0.010       # 10 ms transmit period (matches GUI requirement)
+STEP   = 1      # 1 Nm step 
+PERIOD_S = 0.010    # 10 ms transmit period
 
 
 def encode_int8(value: int) -> int:
@@ -67,17 +52,10 @@ def pack_int8_4wheel(fl: int, fr: int, rl: int, rr: int) -> bytes:
         encode_int8(rr),
     ])
 
+    
+
 
 def ramp_sequence():
-    """
-    Infinite generator: 0 -> +127 -> 0 -> -128 -> 0, repeating.
-
-    Positive ramp :  0,  1,  2, ...  127    (step +1)
-    Back to zero  :  0
-    Negative ramp :  0, -1, -2, ... -128    (step -1)
-    Back to zero  :  0
-    Then repeats.
-    """
     while True:
         # 0 -> +127
         v = 0
@@ -97,7 +75,7 @@ def ramp_sequence():
 
 
 def main():
-    # --- Open Vector bus ---
+    # -- Open Vector bus ---
     try:
         bus = can.interface.Bus(
             interface="vector",
@@ -114,7 +92,7 @@ def main():
           f"+{MAX_NM} Nm (0x{encode_int8(MAX_NM):02X})")
     print(f"Period : {int(PERIOD_S * 1000)} ms    Ctrl+C to stop.\n")
 
-    # Pre-allocate message; update .data each tick
+
     msg = can.Message(arbitration_id=CAN_ID, is_extended_id=False, data=bytes(4))
 
     seq = ramp_sequence()
@@ -138,13 +116,13 @@ def main():
             except can.CanError as ce:
                 print(f"[ERROR] CAN send failed: {ce}", file=sys.stderr)
 
-            # Pace at exactly PERIOD_S (drift-free)
+            
             next_deadline += PERIOD_S
             sleep_time = next_deadline - time.monotonic()
             if sleep_time > 0:
                 time.sleep(sleep_time)
             else:
-                next_deadline = time.monotonic()   # reset if late
+                next_deadline = time.monotonic()   
 
     except KeyboardInterrupt:
         print("\nStopping...")
