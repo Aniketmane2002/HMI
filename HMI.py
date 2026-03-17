@@ -1365,7 +1365,7 @@ class MainWindow(QMainWindow):
             self.periodic_thread.wait(1200)
             self.periodic_thread = None
             self._info("[INFO] Periodic TX stopped.")
-            
+
     # RX batch handler
 
 
@@ -1515,7 +1515,7 @@ class MainWindow(QMainWindow):
     # Manual slider
 
     def _encode_s16_bytes(self, value: int) -> tuple:
-        v = max(TORQUE_MIN, min(TORQUE_MAX, int(value)))
+        v = max(SLIDER_TORQUE_MIN, min(SLIDER_TORQUE_MAX, int(value)))
         if v < 0:
             v = (1 << 16) + v
         lo = v & 0xFF
