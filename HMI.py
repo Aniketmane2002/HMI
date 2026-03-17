@@ -36,27 +36,19 @@ CAN_IFACE_WINDOWS  = "vector"
 
 TORQUE_MIN = -150
 TORQUE_MAX = +150
+SLIDER_TORQUE_MIN= -500
+SLIDER_TORQUE_MAX = +500
 TORQUE_ENDIAN = "little"
 
 LOG_RING_MAX   = 50_000
 LOG_WIDGET_MAX = 3_000
 LOG_FLUSH_MS   = 80
 
-# Directory where logs are saved — no file browser needed
+# Directory where logs are saved 
 DEFAULT_LOG_DIR = os.path.expanduser("~")
 
-
-# ===========================
-#   Simple filename dialog
-#   NO native file browser → zero xkbcommon risk
-# ===========================
-
 class SimpleFilenameDialog(QDialog):
-    """
-    Asks only for a filename string via a QLineEdit.
-    Uses NO native OS file-picker, so the xkbcommon compose-table
-    is never loaded and the Raspberry Pi crash cannot occur.
-    """
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Save CAN Log")
@@ -245,7 +237,7 @@ class ToggleSwitch(QPushButton):
 class BigSlider(QSlider):
     def __init__(self, parent=None):
         super().__init__(Qt.Horizontal, parent)
-        self.setRange(TORQUE_MIN, TORQUE_MAX)
+        self.setRange(SLIDER_TORQUE_MIN, SLIDER_TORQUE_MAX)
         self.setSingleStep(1)
         self.setPageStep(5)
         self.setTracking(True)
@@ -267,7 +259,7 @@ class BigSlider(QSlider):
 
 
 # ===========================
-#     Efficient Log Widget
+#    Log Widget
 # ===========================
 
 class CanLogView(QPlainTextEdit):
@@ -404,16 +396,16 @@ class CanOpenThread(QThread):
 
     def run(self):
         try:
-            sysname = platform.system()
-            if sysname == "Windows":
-                try:
-                    bus = can.interface.Bus(
-                        interface=CAN_IFACE_WINDOWS, channel=0, bitrate=BITRATE)
-                except Exception as e:
-                    self.failed.emit(f"Vector open failed: {e}")
-                    return
-                self.opened.emit(bus)
-                return
+            # sysname = platform.system()
+            # if sysname == "Windows":
+            #     try:
+            #         bus = can.interface.Bus(
+            #             interface=CAN_IFACE_WINDOWS, channel=0, bitrate=BITRATE)
+            #     except Exception as e:
+            #         self.failed.emit(f"Vector open failed: {e}")
+            #         return
+            #     self.opened.emit(bus)
+            #     return
 
             cmd = ["sudo", "ip", "link", "set", CAN_CHANNEL_LINUX,
                    "up", "type", "can", "bitrate", str(BITRATE)]
@@ -449,7 +441,7 @@ class HeaderBar(QWidget):
         super().__init__(parent)
         self._title = title
         self.setMinimumHeight(70)
-        self.setMaximumHeight(70)          # ← fixed: header never grows
+        self.setMaximumHeight(70)          # fixed header 
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setObjectName("HeaderBar")
 
@@ -464,7 +456,7 @@ class HeaderBar(QWidget):
         root.setSpacing(0)
 
         self.leftLogo = QLabel()
-        self.leftLogo.setObjectName("HeaderLogoLeft")
+        self.leftLogo.setObjectName("HeaderLogoLeft") # object for the stylesheet 
         self.leftLogo.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.leftLogo.setMinimumSize(160, 64)
         self._set_logo(self.leftLogo, left_logo_path, QSize(220, 64))
@@ -562,7 +554,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Torque Vectoring HMI")
-        self.resize(1280, 800)
+        self.resize(1280, 800) # screen size obtained from raspberrypi "xrandr"
 
         self.bus:             Optional[can.BusABC]       = None
         self.reader_thread:   Optional[CanReaderThread]  = None
@@ -591,9 +583,6 @@ class MainWindow(QMainWindow):
         self._log_flush_timer.timeout.connect(self._flush_log_to_view)
         self._log_flush_timer.start()
 
-    # ─────────────────────────────────────────────────────────────────────
-    # Bar visibility helpers
-    # ─────────────────────────────────────────────────────────────────────
 
     def _update_bars_visibility(self):
         self._bars_visible = self._on_main_tab and self._on_demo_page
@@ -606,9 +595,8 @@ class MainWindow(QMainWindow):
         self.bar_rl.set_value(rl)
         self.bar_rr.set_value(rr)
 
-    # ─────────────────────────────────────────────────────────────────────
-    # CAN TX helper
-    # ─────────────────────────────────────────────────────────────────────
+    
+    # CAN TX 
 
     def _send_button_cmd(self, arb_id: int, data_bytes: list) -> None:
         if not self.bus:
@@ -633,9 +621,7 @@ class MainWindow(QMainWindow):
         except can.CanError as e:
             QMessageBox.critical(self, "CAN TX Error", f"Message NOT sent:\n{e}")
 
-    # ─────────────────────────────────────────────────────────────────────
     # UI Build
-    # ─────────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
         self.setStatusBar(QStatusBar(self))
@@ -643,7 +629,7 @@ class MainWindow(QMainWindow):
         splitter.setChildrenCollapsible(False)
         self.setCentralWidget(splitter)
 
-        # ── Left slim panel ───────────────────────────────────────────────
+        #  Left slim panel
         left = QWidget()
         lv = QVBoxLayout(left)
         lv.setContentsMargins(16, 16, 16, 16)
@@ -696,14 +682,14 @@ class MainWindow(QMainWindow):
         lv.addStretch(1)
         splitter.addWidget(left)
 
-        # ── Right tabs ────────────────────────────────────────────────────
+        # Right tabs 
         self.tabs = QTabWidget()
         splitter.addWidget(self.tabs)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([220, 1060])
 
-        # ── Main tab ──────────────────────────────────────────────────────
+        # Main tab
         self.tab_main = QWidget()
         main_l = QVBoxLayout(self.tab_main)
         main_l.setContentsMargins(8, 8, 8, 8)
@@ -716,10 +702,9 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.page_manual)  # 1 = Manual
         main_l.addWidget(self.stack, 1)
 
-        # Toggle row — ORIGINAL position (bottom), with fixed height so it
-        # can never be pushed off-screen
+        # Toggle row position (bottom), with fixed height 
         toggle_row = QWidget()
-        toggle_row.setFixedHeight(46)           # ← only change: fixed height
+        toggle_row.setFixedHeight(46)           #  fixed height
         tr2 = QHBoxLayout(toggle_row)
         tr2.setContentsMargins(0, 8, 0, 0)
         tr2.setSpacing(12)
@@ -735,7 +720,7 @@ class MainWindow(QMainWindow):
         tr2.addWidget(self.toggle)
         tr2.addWidget(lbl_demo)
         tr2.addStretch(1)
-        main_l.addWidget(toggle_row, 0)         # stretch=0: never shrinks/grows
+        main_l.addWidget(toggle_row, 0)         # stretch=0 never shrinks/grows
         self.tabs.addTab(self.tab_main, "Main")
 
         # Measurement tab
@@ -753,9 +738,9 @@ class MainWindow(QMainWindow):
             "  0x10  →  Torque feedback (FL, FR, RL, RR)\n"
             "  0x12  →  Diagnostic signals —\n"
             "  0x40  ←  Manual torque command\n\n"
-            "Manual slider range: -150 Nm … +150 Nm\n\n"
+            "Manual slider range: -500 Nm … +500 Nm\n\n"
             "Log columns:  [HH:MM:SS.mmm]  Dir  ID(hex)  DLC  B0 B1 B2 B3 B4 B5 B6 B7\n"
-            f"\nLog files saved to:  {DEFAULT_LOG_DIR}"
+            
         )
         help_text.setWordWrap(True)
         help_text.setFont(QFont("Segoe UI", 11))
@@ -765,23 +750,12 @@ class MainWindow(QMainWindow):
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
     def _build_measurement_tab(self):
-        """
-        Measurement tab.
-        The only layout rules added vs original:
-          - toolbar:         setFixedHeight(46)
-          - col-header:      setFixedHeight(24)
-          - log_view:        setFixedHeight(380)   ← big but bounded
-          - signals row:     setFixedHeight(168)
-          - everything uses stretch=0 so nothing can push anything else
-          - addStretch(1) at bottom absorbs spare pixels harmlessly
-        Signal boxes and log size are unchanged visually from original.
-        """
         self.tab_logs = QWidget()
         log_l = QVBoxLayout(self.tab_logs)
         log_l.setContentsMargins(10, 10, 10, 10)
         log_l.setSpacing(6)
 
-        # ── Toolbar ── fixed height ───────────────────────────────────────
+        #  Toolbar fixed height 
         btn_row = QWidget()
         btn_row.setFixedHeight(46)
         br = QHBoxLayout(btn_row)
@@ -796,8 +770,8 @@ class MainWindow(QMainWindow):
         self.btn_filter         = QPushButton("⧖  Set Filter")
         self.btn_clear          = QPushButton("🗑  Clear")
 
-        self.btn_start_log.setProperty("variant", "success")
-        self.btn_stop_log.setProperty("variant",  "danger")
+        self.btn_start_log.setProperty("variant", "log")
+        self.btn_stop_log.setProperty("variant",  "log")
 
         for b in (self.btn_start_log, self.btn_stop_log,
                   self.btn_start_periodic, self.btn_stop_periodic,
@@ -807,11 +781,11 @@ class MainWindow(QMainWindow):
             br.addWidget(b)
         br.addStretch(1)
 
-        log_l.addWidget(btn_row, 0)             # stretch=0
+        log_l.addWidget(btn_row, 0)            
 
-        # ── Column header ── fixed height ─────────────────────────────────
+        # Column header  fixed height 
         hdr = QLabel(
-            " [HH:MM:SS.mmm]   Dir   ID      DLC   "
+            "[HH:MM:SS.mmm]    Dir   ID      DLC   "
             " B0  B1  B2  B3  B4  B5  B6  B7"
         )
         hdr.setFont(QFont("Consolas", 9, QFont.Bold))
@@ -820,16 +794,14 @@ class MainWindow(QMainWindow):
             "background:#161B22; color:#8B949E; border:1px solid #30363D;"
             "border-radius:4px; padding:3px 6px;"
         )
-        log_l.addWidget(hdr, 0)                 # stretch=0
+        log_l.addWidget(hdr, 0)                 
 
-        # ── Log view ── fixed height so it never expands ──────────────────
         self.log_view = CanLogView()
-        self.log_view.setFixedHeight(380)       # ← bounded; scrollbar handles overflow
-        log_l.addWidget(self.log_view, 0)       # stretch=0
+        self.log_view.setFixedHeight(380)       
+        log_l.addWidget(self.log_view, 0)      
 
-        # ── Signals row ── fixed height ───────────────────────────────────
         signals_splitter = QSplitter(Qt.Horizontal)
-        signals_splitter.setFixedHeight(168)    # ← bounded
+        signals_splitter.setFixedHeight(168)    
 
         torque_box = QGroupBox("Torque Signals — Rx  0x10")
         torque_box.setFont(QFont("Segoe UI", 10, QFont.Bold))
@@ -873,8 +845,8 @@ class MainWindow(QMainWindow):
         signals_splitter.setStretchFactor(0, 1)
         signals_splitter.setStretchFactor(1, 1)
 
-        log_l.addWidget(signals_splitter, 0)    # stretch=0
-        log_l.addStretch(1)                     # absorbs leftover — nothing moves
+        log_l.addWidget(signals_splitter, 0)    
+        log_l.addStretch(1)                     
 
         # Wire buttons
         self.btn_start_log.clicked.connect(self._start_logging)
@@ -887,7 +859,6 @@ class MainWindow(QMainWindow):
 
         self.tabs.addTab(self.tab_logs, "Measurement")
 
-        self._total_msg_count = 0
 
     def _build_header(self) -> QWidget:
         return HeaderBar(
@@ -1009,8 +980,8 @@ class MainWindow(QMainWindow):
         lr = QWidget()
         lrh = QHBoxLayout(lr)
         lrh.setContentsMargins(8, 0, 8, 0)
-        lrh.addWidget(QLabel(f"{TORQUE_MIN} Nm"), 0, Qt.AlignLeft)
-        lrh.addWidget(QLabel(f"+{TORQUE_MAX} Nm"), 0, Qt.AlignRight)
+        lrh.addWidget(QLabel(f"{SLIDER_TORQUE_MIN} Nm"), 0, Qt.AlignLeft)
+        lrh.addWidget(QLabel(f"+{SLIDER_TORQUE_MAX} Nm"), 0, Qt.AlignRight)
 
         self.lbl_manual_val = QLabel("0 Nm")
         self.lbl_manual_val.setFont(QFont("Segoe UI", 12, QFont.Bold))
@@ -1094,10 +1065,15 @@ class MainWindow(QMainWindow):
             background: #707070; color: white; border: 1px solid #1E40AF;
         }
         QPushButton#ModeButton[variant="primary"]:hover   { background: #2E2E2E; }
-        QPushButton#ModeButton[variant="primary"]:pressed { background: #2E2E2E; }
+        QPushButton#ModeButton[variant="primary"]:pressed { background: #191919; }
         QPushButton#ModeButton[variant="magenta"] {
             background: #8B5CF6; color: white; border: 1px solid #6D28D9;
         }
+        QPushButton[variant="log"] {
+            background: #707070; color: white; border: 1px solid #1E40AF;
+        }
+        QPushButton[variant="log"]:hover   { background: #2E2E2E; }
+        QPushButton[variant="log"]:pressed { background: #191919; }
         QPushButton#ModeButton[variant="magenta"]:hover   { background: #7C3AED; }
         QPushButton#ModeButton[variant="magenta"]:pressed { background: #6D28D9; }
         QPushButton#ModeButton[variant="orange"] {
@@ -1148,10 +1124,7 @@ class MainWindow(QMainWindow):
                 eff.setBlurRadius(24)
                 eff.setColor(QColor(0, 0, 0, 60))
                 gb.setGraphicsEffect(eff)
-
-    # ─────────────────────────────────────────────────────────────────────
     # Images
-    # ─────────────────────────────────────────────────────────────────────
 
     def _load_car_image(self, path: str):
         try:
@@ -1172,9 +1145,7 @@ class MainWindow(QMainWindow):
                 self.car.setPixmap(
                     pix.scaled(self.car.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
-    # ─────────────────────────────────────────────────────────────────────
     # CAN ON / OFF
-    # ─────────────────────────────────────────────────────────────────────
 
     def _ui_can_buttons_enabled(self, enabled: bool):
         self.btn_on.setEnabled(enabled)
@@ -1270,16 +1241,10 @@ class MainWindow(QMainWindow):
         if self.bus and self.reader_thread and self.reader_thread.isRunning():
             self._set_status_on()
 
-    # ─────────────────────────────────────────────────────────────────────
-    # Save log — zero Qt file dialog, zero xkbcommon risk
-    # ─────────────────────────────────────────────────────────────────────
+    # Save log 
 
     def _on_save_log(self):
-        """
-        Uses SimpleFilenameDialog (plain QLineEdit, no native file browser).
-        This is the only guaranteed way to avoid the xkbcommon compose-table
-        crash on Raspberry Pi / embedded Linux.
-        """
+
         self._flush_log_to_view()
 
         dlg = SimpleFilenameDialog(self)
@@ -1312,9 +1277,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Failed to save log:\n{e}")
 
-    # ─────────────────────────────────────────────────────────────────────
     # Filter / Clear
-    # ─────────────────────────────────────────────────────────────────────
 
     def _on_set_filter(self):
         """Plain QDialog with QLineEdit — no native picker, no xkbcommon."""
@@ -1366,11 +1329,8 @@ class MainWindow(QMainWindow):
             self._log_ring.clear()
             self._log_pending.clear()
         self.log_view.clear()
-        self._total_msg_count = 0
 
-    # ─────────────────────────────────────────────────────────────────────
     # Logging / Periodic TX
-    # ─────────────────────────────────────────────────────────────────────
 
     def _start_logging(self):
         if self.logging_enabled:
@@ -1405,10 +1365,9 @@ class MainWindow(QMainWindow):
             self.periodic_thread.wait(1200)
             self.periodic_thread = None
             self._info("[INFO] Periodic TX stopped.")
-
-    # ─────────────────────────────────────────────────────────────────────
+            
     # RX batch handler
-    # ─────────────────────────────────────────────────────────────────────
+
 
     def _on_rx_batch(self, messages: list):
         latest_torque = None
@@ -1418,8 +1377,6 @@ class MainWindow(QMainWindow):
         for msg in messages:
             if self.filter_ids and (msg.arbitration_id not in self.filter_ids):
                 continue
-
-            self._total_msg_count += 1
 
             if self.logging_enabled:
                 ts_ms = int((msg.timestamp % 86400) * 1000) if msg.timestamp else 0
@@ -1484,13 +1441,12 @@ class MainWindow(QMainWindow):
             f"  {dir_col}    {arb_id:04X}     {dlc}     {bytes_str}"
         )
 
-    # ─────────────────────────────────────────────────────────────────────
-    # Log info / flush
-    # ─────────────────────────────────────────────────────────────────────
+
+    # Log info
 
     def _info(self, line: str):
         ts = time.strftime("%H:%M:%S")
-        full = f"[{ts}.000]  --   ----    -     {line}"
+        full = f"[{ts}    ]    --   ----    -     {line}"
         with QMutexLocker(self._log_mutex):
             self._log_ring.append(full)
             self._log_pending.append(full)
@@ -1517,9 +1473,7 @@ class MainWindow(QMainWindow):
         self._info(f"[ERROR] Interface issue: {err}")
         self._set_status_off()
 
-    # ─────────────────────────────────────────────────────────────────────
     # Parsing
-    # ─────────────────────────────────────────────────────────────────────
 
     def _decode_s8_signed(self, b: int) -> int:
         return b if b < 128 else b - 256
@@ -1558,9 +1512,7 @@ class MainWindow(QMainWindow):
         self.lbl_estop.setStyleSheet("color: #DC2626;" if es else "color: #16A34A;")
         self.lbl_slip.setText(f"{slip:+d} deg")
 
-    # ─────────────────────────────────────────────────────────────────────
     # Manual slider
-    # ─────────────────────────────────────────────────────────────────────
 
     def _encode_s16_bytes(self, value: int) -> tuple:
         v = max(TORQUE_MIN, min(TORQUE_MAX, int(value)))
@@ -1587,9 +1539,7 @@ class MainWindow(QMainWindow):
         if self.bus:
             self._send_manual_torque(v)
 
-    # ─────────────────────────────────────────────────────────────────────
     # Toggle / Tab
-    # ─────────────────────────────────────────────────────────────────────
 
     def _on_toggle_changed(self):
         if self.toggle.isChecked():
@@ -1608,9 +1558,7 @@ class MainWindow(QMainWindow):
         if not self._on_main_tab:
             self._flush_log_to_view()
 
-    # ─────────────────────────────────────────────────────────────────────
     # Status indicator
-    # ─────────────────────────────────────────────────────────────────────
 
     def _set_status_on(self):
         self.status_ind.set("ON", QColor("#16A34A"))
@@ -1623,9 +1571,6 @@ class MainWindow(QMainWindow):
         self.btn_off.setEnabled(False)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Entry point
-# ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
